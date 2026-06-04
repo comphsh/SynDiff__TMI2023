@@ -88,3 +88,7 @@ class EMA(Optimizer):
                     self.optimizer.state[p]['ema'] = tmp
                 else:
                     p.data = ema.detach()
+
+    def state_dict(self):
+        """返回底层优化器的状态字典，确保兼容性。"""
+        return self.optimizer.state_dict()

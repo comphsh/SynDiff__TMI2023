@@ -19,7 +19,7 @@ from torch.multiprocessing import Process
 import torch.distributed as dist
 import shutil
 from skimage.metrics import peak_signal_noise_ratio as psnr
-
+import time
 
 
 def copy_source(file, output_dir):
@@ -209,7 +209,6 @@ def train_syndiff(rank, gpu, args):
     dataset = CreateDatasetSynthesis(phase = "train", input_path = args.input_path, contrast1 = args.contrast1, contrast2 = args.contrast2)
     dataset_val = CreateDatasetSynthesis(phase = "val", input_path = args.input_path, contrast1 = args.contrast1, contrast2 = args.contrast2 )
 
-
     
     train_sampler = torch.utils.data.distributed.DistributedSampler(dataset,
                                                                     num_replicas=args.world_size,
@@ -312,14 +311,16 @@ def train_syndiff(rank, gpu, args):
     exp = args.exp
     output_path = args.output_path
 
-    exp_path = os.path.join(output_path,exp)
+    current_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time()))
+
+    exp_path = os.path.join(output_path,exp , f"syndiff_{current_time}")
+
     if rank == 0:
         if not os.path.exists(exp_path):
             os.makedirs(exp_path)
             copy_source(__file__, exp_path)
             shutil.copytree('./backbones', os.path.join(exp_path, 'backbones'))
-    
-    
+
     coeff = Diffusion_Coefficients(args, device)
     pos_coeff = Posterior_Coefficients(args, device)
     T = get_time_schedule(args, device)
