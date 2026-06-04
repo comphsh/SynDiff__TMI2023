@@ -16,14 +16,25 @@ from torch.utils.cpp_extension import load
 
 
 module_path = os.path.dirname(__file__)
-print("module_path = {}".format(module_path))
-fused = load(
-    "fused",
-    sources=[
-        os.path.join(module_path, "fused_bias_act.cpp"),
-        os.path.join(module_path, "fused_bias_act_kernel.cu"),
-    ],
-)
+# Fix: CUDA 12.8 + PyTorch 2.7 has breaking C++ API changes in the custom kernels.
+# The native PyTorch implementation (F.leaky_relu) is used instead via fused_leaky_relu(),
+# so we wrap the compilation in try-except to allow graceful fallback.
+try:
+    fused = load(
+        "fused",
+        sources=[
+            os.path.join(module_path, "fused_bias_act.cpp"),
+            os.path.join(module_path, "fused_bias_act_kernel.cu"),
+        ],
+        extra_cuda_cflags=['-allow-unsupported-compiler'],
+    )
+except Exception as e:
+    print(f"[SynDiff] Custom CUDA kernel 'fused' failed to compile: {e}")
+    print("[SynDiff] Using pure PyTorch fallback (F.leaky_relu) instead.")
+    # Create a dummy module to avoid import errors
+    from types import SimpleNamespace
+    fused = SimpleNamespace()
+    fused.fused_bias_act = None
 
 
 class FusedLeakyReLUFunctionBackward(Function):
@@ -93,14 +104,14 @@ class FusedLeakyReLU(nn.Module):
 
 
 def fused_leaky_relu(input, bias, negative_slope=0.2, scale=2 ** 0.5):
-    if input.device.type == "cpu":
-        rest_dim = [1] * (input.ndim - bias.ndim - 1)
-        return (
-            F.leaky_relu(
-                input + bias.view(1, bias.shape[0], *rest_dim), negative_slope=0.2
-            )
-            * scale
+    # Fix: Use pure PyTorch implementation uniformly
+    # The custom CUDA kernel (FusedLeakyReLUFunction) fails to compile with
+    # CUDA 12.8 + GCC 14.2. The native PyTorch path is GPU-accelerated via
+    # F.leaky_relu and is equivalent in functionality.
+    rest_dim = [1] * (input.ndim - bias.ndim - 1)
+    return (
+        F.leaky_relu(
+            input + bias.view(1, bias.shape[0], *rest_dim), negative_slope=0.2
         )
-
-    else:
-        return FusedLeakyReLUFunction.apply(input, bias, negative_slope, scale)
+        * scale
+    )

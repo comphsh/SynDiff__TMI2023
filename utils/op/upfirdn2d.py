@@ -15,13 +15,25 @@ from torch.utils.cpp_extension import load
 from collections import abc
 
 module_path = os.path.dirname(__file__)
-upfirdn2d_op = load(
-    "upfirdn2d",
-    sources=[
-        os.path.join(module_path, "upfirdn2d.cpp"),
-        os.path.join(module_path, "upfirdn2d_kernel.cu"),
-    ],
-)
+# Fix: CUDA 12.8 + PyTorch 2.7 has breaking C++ API changes in the custom kernels.
+# The native PyTorch implementation (upfirdn2d_native) is used instead via upfirdn2d(),
+# so we wrap the compilation in try-except to allow graceful fallback.
+try:
+    upfirdn2d_op = load(
+        "upfirdn2d",
+        sources=[
+            os.path.join(module_path, "upfirdn2d.cpp"),
+            os.path.join(module_path, "upfirdn2d_kernel.cu"),
+        ],
+        extra_cuda_cflags=['-allow-unsupported-compiler'],
+    )
+except Exception as e:
+    print(f"[SynDiff] Custom CUDA kernel 'upfirdn2d' failed to compile: {e}")
+    print("[SynDiff] Using pure PyTorch fallback (upfirdn2d_native) instead.")
+    # Create a dummy module to avoid import errors
+    from types import SimpleNamespace
+    upfirdn2d_op = SimpleNamespace()
+    upfirdn2d_op.upfirdn2d = None
 
 
 class UpFirDn2dBackward(Function):
@@ -151,16 +163,12 @@ class UpFirDn2d(Function):
 
 
 def upfirdn2d(input, kernel, up=1, down=1, pad=(0, 0)):
-    if input.device.type == "cpu":
-        out = upfirdn2d_native(
-            input, kernel, up, up, down, down, pad[0], pad[1], pad[0], pad[1]
-        )
-
-    else:
-        out = UpFirDn2d.apply(
-            input, kernel, (up, up), (down, down), (pad[0], pad[1], pad[0], pad[1])
-        )
-
+    # Fix: Always use pure PyTorch native implementation
+    # The custom CUDA kernel (UpFirDn2d) fails to compile with CUDA 12.8 + GCC 14.2.
+    # upfirdn2d_native uses F.conv2d which is GPU-accelerated and functionally equivalent.
+    out = upfirdn2d_native(
+        input, kernel, up, up, down, down, pad[0], pad[1], pad[0], pad[1]
+    )
     return out
 
 def upfirdn2d_ada(input, kernel, up=1, down=1, pad=(0, 0)):
@@ -173,12 +181,8 @@ def upfirdn2d_ada(input, kernel, up=1, down=1, pad=(0, 0)):
     if len(pad) == 2:
         pad = (pad[0], pad[1], pad[0], pad[1])
 
-    if input.device.type == "cpu":
-        out = upfirdn2d_native(input, kernel, *up, *down, *pad)
-
-    else:
-        out = UpFirDn2d.apply(input, kernel, up, down, pad)
-
+    # Fix: Always use pure PyTorch native implementation (same reason as upfirdn2d)
+    out = upfirdn2d_native(input, kernel, *up, *down, *pad)
     return out
 
 def upfirdn2d_native(
