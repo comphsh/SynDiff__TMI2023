@@ -192,17 +192,20 @@ def train_syndiff(args):
     nz = args.nz  # latent dimension
 
     # ===== Create dataset and data loader =====
+    # NOTE: Only train + val datasets. Test dataset is loaded by eval.py separately.
     dataset = CreateDatasetSynthesis(
         phase="train",
         input_path=args.input_path,
         contrast1=args.contrast1,
-        contrast2=args.contrast2
+        contrast2=args.contrast2,
+        datalist_dir=args.datalist_dir,
     )
     dataset_val = CreateDatasetSynthesis(
         phase="val",
         input_path=args.input_path,
         contrast1=args.contrast1,
-        contrast2=args.contrast2
+        contrast2=args.contrast2,
+        datalist_dir=args.datalist_dir,
     )
 
     # Use standard DataLoader (no DDP)
@@ -776,6 +779,9 @@ if __name__ == '__main__':
     # Generator and training
     parser.add_argument('--exp', default='BraTS20_syndiff', help='name of experiment')
     parser.add_argument('--input_path', help='path to BraTS2020 patient directories')
+    parser.add_argument('--datalist_dir', default=None,
+                        help='path to datalist directory (train.list/val.list). '
+                             'Defaults to $COMPARE_ROOT/datalist/BraTS2020')
     parser.add_argument('--output_path', default='./results', help='path to output saves')
     parser.add_argument('--nz', type=int, default=100)
     parser.add_argument('--num_timesteps', type=int, default=4)

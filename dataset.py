@@ -18,7 +18,7 @@ import nibabel as nib
 import os
 import random
 
-
+# SynDiff__TMI2023
 # Modality order consistent with the unified experiment framework
 MODALITY_ORDER = ['flair', 't1', 't1ce', 't2']
 
@@ -222,7 +222,8 @@ class BraTSDataset2D(torch.utils.data.Dataset):
             return all_mods_tensor
 
 
-def CreateDatasetSynthesis(phase, input_path, contrast1='T1', contrast2='T2'):
+def CreateDatasetSynthesis(phase, input_path, contrast1='T1', contrast2='T2',
+                           datalist_dir=None):
     """
     Compatibility wrapper matching the original SynDiff API.
     Now uses MONAI-based BraTS2020 loading.
@@ -232,9 +233,12 @@ def CreateDatasetSynthesis(phase, input_path, contrast1='T1', contrast2='T2'):
         input_path: path to BraTS2020 data (patient directories with nifti files)
         contrast1: ignored (kept for API compatibility)
         contrast2: ignored (kept for API compatibility)
+        datalist_dir: path to datalist directory (train.list/val.list/test.list).
+            Defaults to $COMPARE_ROOT/datalist/BraTS2020 if None.
     """
-    # Determine datalist directory
-    datalist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'datalist', 'BraTS2020')
+    if datalist_dir is None:
+        datalist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'datalist', 'BraTS2020')
 
     is_train = (phase == 'train')
     dataset = BraTSDataset2D(

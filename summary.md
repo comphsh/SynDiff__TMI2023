@@ -2,313 +2,239 @@
 
 ## 1. 方法基本信息
 
-| 属性 | 值 |
-|------|-----|
-| 方法名称 | SynDiff (Unsupervised Medical Image Translation With Adversarial Diffusion Models) |
-| 发表期刊 | IEEE Transactions on Medical Imaging (TMI), Vol. 42, No. 12, Dec. 2023 |
-| 作者 | Muzaffer Özbey*, Onat Dalmaz*, Salman UH Dar, Hasan A Bedel, Şaban Özturk, Alper Güngör, Tolga Çukur |
-| 机构 | ICON Lab, Bilkent University / Stanford University |
-| 开源地址 | https://github.com/icon-lab/SynDiff |
-| 许可证 | NVIDIA Source Code License |
-| 框架 | PyTorch (>=1.7.1) |
+| 项目 | 内容 |
+|------|------|
+| **方法名称** | SynDiff: Unsupervised Medical Image Translation With Adversarial Diffusion Models |
+| **发表期刊** | IEEE Transactions on Medical Imaging (TMI), Vol. 42, No. 12, Dec. 2023 |
+| **论文链接** | https://arxiv.org/abs/2207.08208 |
+| **官方仓库** | https://github.com/icon-lab/SynDiff (upstream) |
+| **本复现仓库** | https://github.com/comphsh/SynDiff__TMI2023 |
+| **基础框架** | PyTorch 2.7, torchvision |
+| **硬件需求** | GPU ≥ 48GB (Quadro RTX 8000) |
+| **许可协议** | NVIDIA Source Code License |
 
 ## 2. 核心创新点
 
-SynDiff 提出了一种**无监督对抗扩散模型**用于医学图像跨模态翻译：
-
-1. **对抗扩散模型 (Adversarial Diffusion)**：将 GAN 的对抗训练引入扩散模型的去噪过程。判别器在扩散时间步上判断去噪图像的真假，迫使生成器产生更真实的去噪结果。
+1. **对抗扩散模型 (Adversarial Diffusion)**：将 GAN 对抗训练引入扩散模型的去噪过程，判别器在扩散时间步上判断去噪图像的真假
 
 2. **双生成器架构**：
-   - **扩散生成器 (Diffusive Generator)**：基于 NCSN++ (Score-based) 架构，接受噪声图像 $x_{t+1}$ 和源模态图像作为条件，预测干净图像 $x_0$。
-   - **非扩散翻译器 (Non-diffusive Translator)**：基于 ResNet (CycleGAN 风格) 的快速翻译网络，提供初始翻译结果。
+   - **扩散生成器 (NCSNpp)**：基于 Score SDE 的条件生成器，4 步快速采样
+   - **非扩散翻译器 (ResNet)**：CycleGAN 风格的快速翻译网络，提供初始翻译
 
-3. **快速采样**：使用 4 步扩散过程（而非传统扩散模型的 1000+ 步），大幅加速推理。
+3. **后验采样**：在 DDPM 后验分布 q(xt | x0, xt+1) 中采样，结合条件生成
 
-4. **后验采样**：在 DDPM 后验分布 $q(x_t | x_0, x_{t+1})$ 中采样，结合扩散模型的条件生成能力。
+4. **双向循环一致性**：同时训练正向和反向翻译，使用循环一致性损失
 
-5. **双向循环一致性**：类似 CycleGAN，同时训练正向和反向翻译，使用循环一致性损失。
-
-## 3. 原代码结构
+## 3. 代码仓库结构
 
 ```
 SynDiff__TMI2023/
-├── train.py                          # 主训练脚本 (DDP分布式)
-├── test.py                           # 推理测试脚本
-├── dataset.py                        # 数据集加载 (.mat格式, 2D)
-├── backbones/
-│   ├── ncsnpp_generator_adagn.py     # NCSN++ 扩散生成器 (AdaGN条件)
-│   ├── generator_resnet.py           # ResNet 翻译器 + PatchGAN 判别器
-│   ├── discriminator.py              # 时间条件判别器 (Large/Small)
-│   ├── layers.py, layerspp.py        # 网络层 (卷积、注意力、上下采样)
-│   ├── dense_layer.py                # 全连接层
-│   └── up_or_down_sampling.py        # 抗混叠上下采样
+├── backbones/                       # 模型骨干网络
+│   ├── ncsnpp_generator_adagn.py    # NCSN++ 扩散生成器 (AdaGN)
+│   ├── generator_resnet.py          # ResNet 翻译器 + PatchGAN 判别器
+│   ├── discriminator.py             # 时间条件判别器
+│   ├── layers.py / layerspp.py      # 基础网络层
+│   ├── dense_layer.py               # 全连接层
+│   └── up_or_down_sampling.py       # 抗混叠上下采样
 ├── utils/
-│   ├── EMA.py                        # 指数移动平均优化器
-│   ├── utils.py                      # TensorFlow checkpoint 工具
-│   └── op/                           # CUDA 自定义算子
-├── datalist/BraTS2020/               # 数据集划分 (我们添加)
-│   ├── train.list (260 subjects)
-│   ├── val.list (36 subjects)
-│   └── test.list (73 subjects)
-├── run_BraTS20_train.sh              # 原训练脚本
-└── run_Noise_train.sh                # 原去噪训练脚本
+│   ├── EMA.py                       # 指数移动平均
+│   └── op/                          # CUDA 自定义算子 (已降级为 PyTorch)
+├── datalist/BraTS2020/              # 数据集划分 (70/10/20)
+│   ├── train.list (260), val.list (36), test.list (73)
+├── dataset.py                        # 数据加载 (NIfTI 在线加载)
+├── train.py                          # 训练脚本 (单卡)
+├── eval.py                           # 推理脚本 (仅预测，不含指标)
+├── run_train.sh                      # 训练启动脚本
+├── run_eval.sh                       # 评估启动脚本
+└── summary.md                        # 本报告
 ```
 
-## 4. 原数据加载方式
+## 4. 数据加载方式
 
-- **格式**: `.mat` 文件 (MATLAB/HDF5)
-- **维度**: 2D 切片，形状 `(N, H, W)` 其中 N=切片数
-- **预处理**: 每个模态独立存储为 `data_{phase}_{contrast}.mat`
-- **归一化**: `(data - 0.5) / 0.5` → 映射到 [-1, 1]
-- **模态对**: 一次只加载两个模态 (contrast1, contrast2)
+- **格式**：直接从 NIfTI (.nii / .nii.gz) 加载
+- **维度**：3D → 逐 2D 切片提取 (256×256)
+- **归一化**：百分位归一化 (0-99.5%) → [0,1] → 映射到 [-1,1]
+- **训练**：随机采样源-目标模态对 (4 选 2)
+- **测试**：按 14 种 mask 模式加载
 
 ## 5. 原模型架构
 
-### 扩散生成器 (NCSNpp)
-- **输入**: 噪声图像 $x_{t+1}$ + 源模态图像 (2通道)
-- **输出**: 预测的去噪图像 $x_0$ (1通道)
-- **架构**: U-Net 风格编码器-解码器，含 BigGAN 残差块、注意力层
-- **条件注入**: AdaGN (Adaptive Group Normalization) + 时间嵌入 + 潜在编码z
+```
+训练: x_t+1 + source_modality → Gen_diffusive → x_0_predict
+      source → Gen_non_diffusive → translated
+      ↓
+      Disc_diffusive(x_pos_sample, t, x_t+1) → real/fake
+      Disc_cycle → cycle consistency
+      ↓
+      Loss = L_adv + λ*L_cycle + L_cycle_adv + λ*L_l1
+```
 
-### 非扩散翻译器 (ResNet Generator)
-- **输入**: 源模态图像 (1通道)
-- **输出**: 翻译后的目标模态图像 (1通道)
-- **架构**: 6个 ResNet 块的编码器-解码器
+**超参数**：
+- num_timesteps=4, num_channels_dae=64, ch_mult=[1,1,2,2,4,4]
+- nz=100, z_emb_dim=256, t_emb_dim=256
+- lr_g=1.6e-4, lr_d=1e-4, beta1=0.5, beta2=0.9
+- batch_size=1, num_epoch=200
+- lambda_l1_loss=0.5, r1_gamma=0.05
 
-### 判别器
-- **扩散判别器**: 时间条件判别器，输入 $[x_t, x_{t+1}]$ (2通道)
-- **循环判别器**: PatchGAN 判别器 (70×70)
-
-### 损失函数
-| 损失 | 权重 | 说明 |
-|------|------|------|
-| G_adv | 1.0 | 扩散生成器对抗损失 (softplus) |
-| G_cycle_adv | 1.0 | 翻译器对抗损失 |
-| G_L1 | 0.5 | 扩散预测的 L1 重构损失 |
-| G_cycle | 0.5 | 循环一致性 L1 损失 |
-| D_real | 1.0 | 判别器真实样本损失 |
-| D_fake | 1.0 | 判别器生成样本损失 |
-| R1 | 0.05 | R1 梯度惩罚 |
-
-## 6. 原评估方式
-
-- 仅计算 PSNR (skimage) 和 L1 Loss
-- 可视化保存为 PNG 图像
-- 不涉及 FID/LPIPS/SSIM 等深度特征指标
-
-## 7. 与 MySparseDiffusion 的关键差异
-
-| 维度 | SynDiff | MySparseDiffusion |
-|------|---------|-------------------|
-| **范式** | 对抗扩散模型 (Adversarial Diffusion) | 稀疏扩散模型 (Sparse Diffusion + MoE) |
-| **生成方式** | 条件生成 (源模态→目标模态) | 无条件生成 + 条件引导 |
-| **架构** | NCSN++ + ResNet + PatchGAN | VAE + Diffusion + MoE |
-| **扩散步数** | 4步 (极快) | 标准 DDPM (1000步) |
-| **维度** | 2D (逐切片处理) | 3D (体积处理) |
-| **模态数** | 2模态 (双向) | 4模态 (全对全) |
-| **训练策略** | GAN对抗训练 + 循环一致性 | VAE重建 + 扩散去噪 |
-| **推理速度** | 极快 (4步) | 较慢 (1000步) |
-| **图像质量** | 依赖对抗训练，细节较好 | 依赖扩散过程，多样性好 |
-| **训练稳定性** | GAN训练不稳定 | 扩散训练较稳定 |
-| **GPU显存** | 适中 (2D处理) | 大 (3D处理) |
-
-## 8. 统一实验配置
+## 6. 统一实验配置
 
 ### 数据集
-- **数据源**: BraTS 2020 训练集
-- **样本数**: 369例 (训练260 / 验证36 / 测试73)
-- **模态**: flair, t1, t1ce, t2 (顺序固定)
-- **数据划分**: `datalist/BraTS2020/{train,val,test}.list`
+- **BraTS 2020**：369 例
+- **划分**：train 260, val 36, test 73 (70/10/20)
+- **数据路径**：`$DATA_ROOT/{patient_name}/{patient_name}_{modal}.nii`
+- **模态顺序**：flair, t1, t1ce, t2
 
-### 缺失模式 (14种)
-| mask_id | 模式 | 缺失模态 | 可用模态 |
-|---------|------|----------|----------|
-| 1  | 0111 | flair | t1+t1ce+t2 |
-| 2  | 1011 | t1 | flair+t1ce+t2 |
-| 3  | 1101 | t1ce | flair+t1+t2 |
-| 4  | 1110 | t2 | flair+t1+t1ce |
-| 5  | 0011 | flair+t1 | t1ce+t2 |
-| 6  | 0101 | flair+t1ce | t1+t2 |
-| 7  | 0110 | flair+t2 | t1+t1ce |
-| 8  | 1001 | t1+t1ce | flair+t2 |
-| 9  | 1010 | t1+t2 | flair+t1ce |
-| 10 | 1100 | t1ce+t2 | flair+t1 |
-| 11 | 0001 | flair+t1+t1ce | t2 |
-| 12 | 0010 | flair+t1+t2 | t1ce |
-| 13 | 0100 | flair+t1ce+t2 | t1 |
-| 14 | 1000 | t1+t1ce+t2 | flair |
+### 缺失模式 (14 种)
+| mask | 模式 | 可用模态 | 缺失数 | 描述 |
+|------|------|---------|--------|------|
+| 0111 | 1-miss | t1, t1ce, t2 | 1 | Flair 缺失 |
+| 1011 | 1-miss | flair, t1ce, t2 | 1 | T1 缺失 |
+| 1101 | 1-miss | flair, t1, t2 | 1 | T1CE 缺失 |
+| 1110 | 1-miss | flair, t1, t1ce | 1 | T2 缺失 |
+| 0011 | 2-miss | t1ce, t2 | 2 | Flair+T1 缺失 |
+| 0101 | 2-miss | t1, t2 | 2 | Flair+T1CE 缺失 |
+| 0110 | 2-miss | t1, t1ce | 2 | Flair+T2 缺失 |
+| 1001 | 2-miss | flair, t2 | 2 | T1+T1CE 缺失 |
+| 1010 | 2-miss | flair, t1ce | 2 | T1+T2 缺失 |
+| 1100 | 2-miss | flair, t1 | 2 | T1CE+T2 缺失 |
+| 0001 | 3-miss | t2 | 3 | Flair+T1+T1CE 缺失 |
+| 0010 | 3-miss | t1ce | 3 | Flair+T1+T2 缺失 |
+| 0100 | 3-miss | t1 | 3 | Flair+T1CE+T2 缺失 |
+| 1000 | 3-miss | flair | 3 | T1+T1CE+T2 缺失 |
 
 ### 评价指标
-- SSIM (结构相似性)
-- PSNR (峰值信噪比)
-- MSE (均方误差)
-- MAE (平均绝对误差)
-- LPIPS (学习感知相似度)
-- FID (Fréchet Inception Distance, 2.5D)
-
-所有指标通过 `$EVAL_SCRIPT` (syn_metrics.py) 统一计算。
-
-### 训练超参数
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| optimizer | Adam | 沿用官方设置 |
-| lr_g | 1.6e-4 | 生成器学习率 |
-| lr_d | 1e-4 | 判别器学习率 |
-| beta1, beta2 | 0.5, 0.9 | Adam参数 |
-| batch_size | 1 | 显存限制 (48G RTX 8000) |
-| num_epoch | 200 | 统一训练轮数 |
-| lr_scheduler | CosineAnnealingLR | 余弦退火到 1e-5 |
-| num_timesteps | 4 | 扩散步数 |
-| image_size | 256 | 输入图像尺寸 |
-
-## 9. 代码适配清单
-
-### 已完成适配
-
-1. **数据加载 (dataset.py)** ✅
-   - 替换 `.mat` → `.nii/.nii.gz` 加载
-   - 按患者ID组织，从 nifti 提取 2D 切片
-   - 百分位归一化 (0-99.5%)
-   - 随机源-目标模态对采样
-   - 保持 `CreateDatasetSynthesis` API 兼容
-
-2. **训练 (train.py)** ✅
-   - 移除 DDP 分布式训练 → 单GPU训练
-   - 添加 TensorBoard 日志 (epoch loss/lr)
-   - 模型保存至 `results/task_{timestamp}/models/`
-   - 默认 200 epochs
-   - 保持原始架构和损失函数
-
-3. **推理 (eval.py)** ✅ (新建)
-   - 对测试集逐样本生成14种缺失组合
-   - 切片级推理 → 3D体积重建
-   - 保存输入、真值、预测图像
-   - 自动调用 syn_metrics.py 计算指标
-
-4. **启动脚本** ✅
-   - `run_train.sh`: 一键训练
-   - `run_eval.sh`: 一键评估
-
-5. **CUDA 兼容性修复** ✅
-   - `utils/op/fused_act.py`: 自定义 CUDA kernel 改为纯 PyTorch `F.leaky_relu` 实现
-   - `utils/op/upfirdn2d.py`: 自定义 CUDA kernel 改为纯 PyTorch `upfirdn2d_native` 实现
-   - 两处均包裹 try-except，编译失败时自动降级
-
-### 未修改文件
-- `backbones/`: 所有模型架构文件保持不变
-- `utils/EMA.py`: 保持不变
-- `test.py`: 原推理脚本保留（不再使用）
+- SSIM, PSNR, MSE, MAE, LPIPS, FID
+- 由外部 `syn_metric.py` 统一计算
 
 ---
 
-## 10. 完整操作指南
+## 7. 完整执行命令指南
 
-### 10.1 环境检查
-
-在开始之前，确认以下条件满足：
+### 7.0 环境准备
 
 ```bash
-# ===== 1. 检查 GPU 和 CUDA =====
-nvidia-smi
-# 预期: Quadro RTX 8000 48G 或 RTX 5090
+# ============================================================
+# 全局路径变量（按实际修改）
+# ============================================================
+export COMPARE_ROOT=/devdata2/hsh/program/python/methods/contrast_method_selected_of_diff_moe_synthesis/SynDiff__TMI2023
+export DATA_ROOT=/devdata/hsh/datasets/seg_dataset/BraTS2020/brats20-dataset-training-validation/versions/1/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData
+export DATALIST_DIR=$COMPARE_ROOT/datalist/BraTS2020
 
-# ===== 2. 检查 Python 环境 =====
-python3 --version
-# 预期: Python 3.10+
+# ============================================================
+# 1. 切换到实验分支
+# ============================================================
+cd $COMPARE_ROOT
+git checkout experiment/SynDiff_adapt
 
-python3 -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}')"
-# 预期: PyTorch 2.7.0+cu128 或类似版本
+# ============================================================
+# 2. 验证环境依赖
+# ============================================================
+# 需要安装的 Python 包:
+#   torch, torchvision, tensorboard, nibabel, numpy, opencv-python
+#
+# 检查 CUDA 可用性:
+python3 -c "
+import torch
+print(f'PyTorch: {torch.__version__}')
+print(f'CUDA available: {torch.cuda.is_available()}')
+print(f'GPU: {torch.cuda.get_device_name(0)}')
+"
 
-# ===== 3. 检查依赖库 =====
-python3 -c "import numpy; import nibabel; import cv2; print('numpy, nibabel, cv2: OK')"
-python3 -c "import torch.utils.tensorboard; print('tensorboard: OK')"
+# ============================================================
+# 3. 验证数据目录结构（无需预处理！）
+# ============================================================
+# 期望格式: $DATA_ROOT/{patient_name}/{patient_name}_{modal}.nii
+# 示例:
+#   $DATA_ROOT/BraTS20_Training_001/BraTS20_Training_001_flair.nii
+#   $DATA_ROOT/BraTS20_Training_001/BraTS20_Training_001_t1.nii
+#   $DATA_ROOT/BraTS20_Training_001/BraTS20_Training_001_t1ce.nii
+#   $DATA_ROOT/BraTS20_Training_001/BraTS20_Training_001_t2.nii
+#
+ls $DATA_ROOT/BraTS20_Training_001/
 
-# ===== 4. 检查数据集路径 =====
-DATA_ROOT="/devdata/hsh/datasets/seg_dataset/BraTS2020/brats20-dataset-training-validation/versions/1/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
-ls "$DATA_ROOT" | head -5
-# 预期: BraTS20_Training_001  BraTS20_Training_002 ...
+# ============================================================
+# 4. 验证数据集划分
+# ============================================================
+echo "Train: $(wc -l < $DATALIST_DIR/train.list) patients"
+echo "Val:   $(wc -l < $DATALIST_DIR/val.list) patients"
+echo "Test:  $(wc -l < $DATALIST_DIR/test.list) patients"
 
-ls "$DATA_ROOT/BraTS20_Training_001/"
-# 预期: BraTS20_Training_001_flair.nii  BraTS20_Training_001_t1.nii  ...
-
-# ===== 5. 检查 datalist =====
-wc -l datalist/BraTS2020/*.list
-# 预期: train.list=260, val.list=36, test.list=73
-```
-
-### 10.2 快速语法验证（不加载数据，5秒完成）
-
-```bash
-# 验证所有模块能正常导入和模型前向传播
+# ============================================================
+# 5. 快速冒烟测试（验证数据加载 + 模型前向，约2分钟）
+# ============================================================
 python3 -c "
 import sys; sys.path.insert(0, '.')
 import torch
-
-# 1. 模块导入测试
+from dataset import BraTSDataset2D, MODALITY_ORDER
 from backbones.ncsnpp_generator_adagn import NCSNpp
-import backbones.generator_resnet
 from backbones.discriminator import Discriminator_large
-from dataset import load_patient_ids, normalize_volume, MODALITY_ORDER
-print('1. All imports: OK')
+import backbones.generator_resnet
+import torch.nn as nn
 
-# 2. Datalist 加载测试
-for phase in ['train', 'val', 'test']:
-    ids = load_patient_ids(phase, './datalist/BraTS2020')
-    print(f'2. {phase}: {len(ids)} patients')
+DATA_ROOT = '$DATA_ROOT'
+DATALIST_DIR = '$DATALIST_DIR'
 
-# 3. 模型构建 + 前向传播测试
-class Args:
-    seed=1024; image_size=256; num_channels=2; num_channels_dae=64
-    ch_mult=[1,1,2,2,4,4]; num_res_blocks=2; attn_resolutions=(16,)
-    dropout=0.; resamp_with_conv=True; conditional=True; fir=True
-    fir_kernel=[1,3,3,1]; skip_rescale=True; resblock_type='biggan'
-    progressive='none'; progressive_input='residual'; progressive_combine='sum'
-    embedding_type='positional'; fourier_scale=16.; not_use_tanh=False
-    centered=True; nz=100; n_mlp=3; z_emb_dim=256; t_emb_dim=256
-    ngf=64; use_geometric=False
+# 测试数据加载
+print('=== 测试数据加载 ===')
+ds = BraTSDataset2D('train', data_root=DATA_ROOT, datalist_dir=DATALIST_DIR, random_mask=True)
+src, tgt = ds[0]
+print(f'Train sample: source={src.shape}, range=[{src.min():.2f},{src.max():.2f}]')
 
-args = Args()
-device = torch.device('cuda:0')
+ds_val = BraTSDataset2D('val', data_root=DATA_ROOT, datalist_dir=DATALIST_DIR, random_mask=True)
+src, tgt = ds_val[0]
+print(f'Val sample: source={src.shape}, target={tgt.shape}')
 
+# 测试模型
+print('=== 测试模型创建与前向传播 ===')
+class A: pass
+args = A()
+for k,v in {'image_size':256,'num_channels':2,'num_channels_dae':64,
+            'ch_mult':[1,1,2,2,4,4],'num_res_blocks':2,'attn_resolutions':(16,),
+            'dropout':0.,'resamp_with_conv':True,'conditional':True,'fir':True,
+            'fir_kernel':[1,3,3,1],'skip_rescale':True,'resblock_type':'biggan',
+            'progressive':'none','progressive_input':'residual','progressive_combine':'sum',
+            'embedding_type':'positional','fourier_scale':16.,'not_use_tanh':False,
+            'centered':True,'nz':100,'n_mlp':3,'z_emb_dim':256,'t_emb_dim':256,'ngf':64}.items():
+    setattr(args, k, v)
+
+device = 'cuda'
 gen = NCSNpp(args).to(device)
 x = torch.cat([torch.randn(1,1,256,256), torch.randn(1,1,256,256)], dim=1).to(device)
 out = gen(x, torch.randint(0,4,(1,)).to(device), torch.randn(1,100).to(device))
-print(f'3. NCSNpp forward: {x.shape} -> {out.shape}')
+print(f'NCSNpp forward: {x.shape} -> {out.shape}')
 
-disc = Discriminator_large(nc=2, ngf=64, t_emb_dim=256, act=torch.nn.LeakyReLU(0.2)).to(device)
+disc = Discriminator_large(nc=2, ngf=64, t_emb_dim=256, act=nn.LeakyReLU(0.2)).to(device)
 d_out = disc(x, torch.randint(0,4,(1,)).to(device), x)
-print(f'4. Discriminator forward: -> {d_out.shape}')
+print(f'Discriminator forward: -> {d_out.shape}')
 
 args.num_channels = 1
 trans = backbones.generator_resnet.define_G(netG='resnet_6blocks', gpu_ids=[0])
 t_out = trans(torch.randn(1,1,256,256).to(device))
-args.num_channels = 2
-print(f'5. Translator forward: -> {t_out.shape}')
+print(f'Translator forward: -> {t_out.shape}')
 
-print('ALL CHECKS PASSED - Ready to train!')
+print('🎉 冒烟测试全部通过！')
 "
 ```
 
-如果看到 `ALL CHECKS PASSED`，说明代码和环境就绪。
+### 7.1 训练命令
 
----
-
-### 10.3 训练
-
-#### 一键启动（推荐）
+#### 方式一：使用 shell 脚本（推荐）
 
 ```bash
-# 进入项目目录
-cd /devdata2/hsh/program/python/methods/contrast_method_selected_of_diff_moe_synthesis/SynDiff__TMI2023
-
-# 启动训练
+# 直接执行训练脚本
+cd $COMPARE_ROOT
 bash run_train.sh
 ```
 
-#### 手动命令（完整参数）
+#### 方式二：直接调用 Python（可自定义参数）
 
 ```bash
-python3 train.py \
+# ============================================================
+# 完整训练命令（等效于 run_train.sh）
+# ============================================================
+cd $COMPARE_ROOT
+
+python train.py \
     --image_size 256 \
     --num_channels 2 \
     --num_channels_dae 64 \
@@ -319,294 +245,369 @@ python3 train.py \
     --num_epoch 200 \
     --ngf 64 \
     --embedding_type positional \
-    --r1_gamma 0.05 \
     --z_emb_dim 256 \
-    --lr_d 1e-4 \
+    --t_emb_dim 256 \
     --lr_g 1.6e-4 \
+    --lr_d 1e-4 \
+    --beta1 0.5 \
+    --beta2 0.9 \
+    --r1_gamma 0.05 \
     --lazy_reg 10 \
-    --save_content \
-    --save_content_every 50 \
-    --save_ckpt_every 50 \
     --lambda_l1_loss 0.5 \
-    --contrast1 T1 \
-    --contrast2 T2 \
+    --nz 100 \
+    --save_content \
+    --save_ckpt_every 50 \
+    --save_content_every 50 \
     --exp BraTS20_syndiff \
-    --input_path /devdata/hsh/datasets/seg_dataset/BraTS2020/brats20-dataset-training-validation/versions/1/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData \
-    --output_path ./results
+    --input_path "$DATA_ROOT" \
+    --datalist_dir "$DATALIST_DIR" \
+    --output_path "$COMPARE_ROOT/results"
 ```
 
-#### 关键参数说明
+#### 训练输出结构
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--num_epoch` | 200 | 训练轮数，统一实验框架要求 |
-| `--batch_size` | 1 | 若48G显存不足可保持1 |
-| `--lr_g` | 1.6e-4 | 生成器学习率（官方推荐） |
-| `--lr_d` | 1e-4 | 判别器学习率（官方推荐） |
-| `--num_timesteps` | 4 | 扩散步数，越大质量越好但越慢 |
-| `--num_channels_dae` | 64 | 扩散生成器通道数 |
-| `--save_ckpt_every` | 50 | 每隔N个epoch保存模型权重 |
-| `--save_content_every` | 50 | 每隔N个epoch保存完整checkpoint |
-| `--lambda_l1_loss` | 0.5 | L1损失权重 |
-| `--r1_gamma` | 0.05 | R1梯度惩罚系数 |
-| `--lazy_reg` | 10 | 每N步计算一次R1惩罚（节省显存） |
+```
+results/
+└── task_20260605_143022/          # task_{timestamp}
+    ├── models/                     # 模型保存目录
+    │   ├── gen_diffusive_1_0.pth   # Epoch 0
+    │   ├── gen_diffusive_2_200.pth # 最终模型
+    │   ├── gen_non_diffusive_1to2_200.pth
+    │   ├── gen_non_diffusive_2to1_200.pth
+    │   └── content.pth             # 完整 checkpoint（可 resume）
+    ├── tensorboard/                # TensorBoard 日志
+    │   └── events.out.tfevents.*
+    ├── train.py                    # 训练脚本备份
+    ├── xpos1_epoch_10.png          # 训练样本可视化
+    └── sample1_epoch_10.png
+```
 
-#### 训练监控
+#### 训练过程监控
 
 ```bash
-# 终端1：启动 TensorBoard
-tensorboard --logdir results/task_*/tensorboard --port 6006
+# ============================================================
+# 启动 TensorBoard 查看训练曲线
+# ============================================================
+tensorboard --logdir $COMPARE_ROOT/results/task_*/tensorboard --port 6006
+# 浏览器打开: http://localhost:6006
 
-# 终端2：浏览器打开 http://localhost:6006
-# 查看曲线: epoch/G_total, epoch/D_total, epoch/lr_g, epoch/lr_d 等
+# 监控的指标:
+#   epoch/G_total      - 生成器总损失
+#   epoch/G_L1         - L1 重建损失
+#   epoch/G_cycle      - 循环一致性损失
+#   epoch/G_adv        - 对抗损失
+#   epoch/D_total      - 判别器损失
+#   epoch/lr_g         - 生成器学习率
+#   epoch/lr_d         - 判别器学习率
 
-# 终端3：查看实时 GPU 使用情况
+# ============================================================
+# 用 nvidia-smi 监控 GPU 使用
+# ============================================================
 watch -n 1 nvidia-smi
 
-# 查看最新日志输出
-tail -f results/task_*/outputs/log.txt 2>/dev/null || ls results/task_*/
-```
-
-#### 训练输出目录结构
-
-```
-results/task_20260605_143022/
-├── models/                          # 模型保存目录
-│   ├── gen_diffusive_1_50.pth       # 扩散生成器1 (epoch 50)
-│   ├── gen_diffusive_1_100.pth      # 扩散生成器1 (epoch 100)
-│   ├── gen_diffusive_1_150.pth
-│   ├── gen_diffusive_1_200.pth      # 最终模型
-│   ├── gen_diffusive_2_50.pth       # 扩散生成器2
-│   ├── gen_diffusive_2_200.pth
-│   ├── gen_non_diffusive_1to2_50.pth  # 翻译器 1→2
-│   ├── gen_non_diffusive_1to2_200.pth
-│   ├── gen_non_diffusive_2to1_50.pth  # 翻译器 2→1
-│   ├── gen_non_diffusive_2to1_200.pth
-│   └── content.pth                  # 完整checkpoint（可resume）
-├── tensorboard/                     # TensorBoard 日志
-│   └── events.out.tfevents.xxx
-├── train.py                         # 训练脚本备份
-├── xpos1_epoch_10.png               # 训练样本可视化
-├── sample1_epoch_10.png
-└── ...
+# ============================================================
+# 后台运行（推荐）
+# ============================================================
+nohup bash run_train.sh > train.log 2>&1 &
+tail -f train.log
 ```
 
 #### 训练时间预估
 
 - 每 epoch 约 8-15 分钟（取决于 slice 数量和 GPU）
 - 200 epochs 总计约 **27-50 小时**
-- 建议使用 `nohup` 或 `screen`/`tmux` 在后台运行：
-
-```bash
-# 后台运行（推荐）
-nohup bash run_train.sh > train.log 2>&1 &
-
-# 查看进度
-tail -f train.log
-
-# 或使用 screen
-screen -S syndiff_train
-bash run_train.sh
-# Ctrl+A, D 分离
-# screen -r syndiff_train 重新连接
-```
-
-#### 断点续训
-
-```bash
-# 如果训练中断，添加 --resume 继续训练
-# 注意：需要修改 train.py 中的 checkpoint 加载路径
-# 或手动指定 content.pth 路径
-```
 
 ---
 
-### 10.4 推理与评估
+### 7.2 推理命令 (eval.py — 仅预测合成)
 
-#### 一键评估（推荐）
+> **eval.py 只做推理预测，不计算指标。** 指标计算由 syn_metric.py 单独完成。
+
+#### 方式一：使用 shell 脚本（推荐）
 
 ```bash
-# 替换为实际的 task 时间戳
-TASK_TS="20260605_143022"
-bash run_eval.sh $TASK_TS
+# ============================================================
+# 完整 pipeline：推理 → 指标（两步自动执行）
+# ============================================================
+cd $COMPARE_ROOT
 
-# 也可以指定 checkpoint epoch（默认200）
-bash run_eval.sh $TASK_TS 200
+# <task_ts> 替换为训练时生成的时间戳，例如 20260605_143022
+bash run_eval.sh 20260605_143022
+
+# 使用特定 epoch 的模型
+bash run_eval.sh 20260605_143022 200
+
+# 仅重新计算指标（跳过推理，需要已有预测结果）
+bash run_eval.sh 20260605_143022 200 --metrics_only
 ```
 
-#### 手动命令（完整参数）
+#### 方式二：单独调用 eval.py（仅推理）
 
 ```bash
-TASK_TS="20260605_143022"
-WHICH_EPOCH=200
+# ============================================================
+# Step 1: eval.py — 加载模型 → 14种mask推理 → 保存 NIfTI
+# ============================================================
+TASK_TS="20260605_143022"   # 替换为实际时间戳
 
-python3 eval.py \
+cd $COMPARE_ROOT
+
+python eval.py \
+    --input_path "$DATA_ROOT" \
+    --datalist_dir "$DATALIST_DIR" \
+    --output_path "$COMPARE_ROOT/results" \
+    --task_ts "$TASK_TS" \
+    --ckpt_epoch 200 \
+    --gpu 0 \
     --image_size 256 \
     --num_channels 2 \
     --num_channels_dae 64 \
     --ch_mult 1 1 2 2 4 4 \
     --num_timesteps 4 \
     --num_res_blocks 2 \
-    --batch_size 1 \
     --embedding_type positional \
     --z_emb_dim 256 \
-    --ngf 64 \
-    --ckpt_path "./results/task_${TASK_TS}" \
-    --which_epoch ${WHICH_EPOCH} \
-    --gpu_chose 0 \
-    --input_path /devdata/hsh/datasets/seg_dataset/BraTS2020/brats20-dataset-training-validation/versions/1/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData \
-    --eval_script /devdata2/hsh/program/python/methods/MySparseDiffusion/my_sparse_diff-moe-006/scripts/_01_vae/metrics/syn_metrics.py
+    --t_emb_dim 256
 ```
 
-#### 评估输出目录结构
+#### 推理输出结构 (mask_str = 4位二进制字符串)
 
 ```
 results/task_20260605_143022/
-├── prediction/                       # 预测图像目录
-│   ├── 1/                            # mask_id=1 (0111: flair缺失)
-│   │   ├── BraTS20_Training_137_flair_syn.nii.gz    # flair 合成图
-│   │   ├── BraTS20_Training_137_t1_input.nii.gz      # t1 输入（可用模态）
-│   │   ├── BraTS20_Training_137_t1ce_input.nii.gz    # t1ce 输入
-│   │   ├── BraTS20_Training_137_t2_input.nii.gz      # t2 输入
-│   │   ├── BraTS20_Training_137_flair_gt.nii.gz      # flair 真值
-│   │   └── ...
-│   ├── 2/                            # mask_id=2 (1011: t1缺失)
-│   ├── ...
-│   └── 14/                           # mask_id=14 (1000: t1+t1ce+t2缺失)
-├── prediction_metric_result/         # 指标结果目录
-│   ├── 1/
-│   │   └── result.txt                # mask_id=1 的 SSIM/PSNR/MSE/MAE/LPIPS/FID
-│   ├── 2/
-│   │   └── result.txt
-│   └── ...
-│       └── result.txt
-└── (models/, tensorboard/ 等同上)
+├── models/                                   # 训练输出（权重在此）
+│   ├── gen_diffusive_1_200.pth
+│   └── gen_diffusive_2_200.pth
+│
+├── prediction/                               # 推理输出（eval.py 生成）
+│   ├── 0111/                                 # mask=0111: flair缺失 (1-miss)
+│   │   ├── BraTS20_Training_137_flair_syn.nii.gz   (合成)
+│   │   ├── BraTS20_Training_137_t1_input.nii.gz     (输入)
+│   │   ├── BraTS20_Training_137_t1ce_input.nii.gz   (输入)
+│   │   ├── BraTS20_Training_137_t2_input.nii.gz     (输入)
+│   │   ├── BraTS20_Training_137_t1_gt.nii.gz        (真值)
+│   │   └── ... (73 patients × 4 modalities)
+│   ├── 1011/                                 # mask=1011: t1缺失 (1-miss)
+│   ├── 1101/                                 # mask=1101: t1ce缺失 (1-miss)
+│   ├── 1110/                                 # mask=1110: t2缺失 (1-miss)
+│   ├── 0011/                                 # mask=0011: flair+t1缺失 (2-miss)
+│   ├── 0101/                                 # mask=0101: flair+t1ce缺失 (2-miss)
+│   ├── 0110/                                 # mask=0110: flair+t2缺失 (2-miss)
+│   ├── 1001/                                 # mask=1001: t1+t1ce缺失 (2-miss)
+│   ├── 1010/                                 # mask=1010: t1+t2缺失 (2-miss)
+│   ├── 1100/                                 # mask=1100: t1ce+t2缺失 (2-miss)
+│   ├── 0001/                                 # mask=0001: flair+t1+t1ce缺失 (3-miss)
+│   ├── 0010/                                 # mask=0010: flair+t1+t2缺失 (3-miss)
+│   ├── 0100/                                 # mask=0100: flair+t1ce+t2缺失 (3-miss)
+│   └── 1000/                                 # mask=1000: t1+t1ce+t2缺失 (3-miss)
+│
+└── prediction_metric_result/                 # 评估输出（syn_metric.py 生成）
+    ├── 0111/result.txt
+    ├── 1011/result.txt
+    ├── ...
+    └── 1110/result.txt
 ```
 
-#### 结果文件格式 (result.txt)
+**Mask 编码规则**：
+- 4位二进制字符串，顺序 **`[flair, t1, t1ce, t2]`**
+- `1` = 可用（作为条件输入），`0` = 缺失（需要合成）
+- 例如 `1110` = flair/t1/t1ce 可用，t2 缺失（1-missing 模式）
+- 共 14 种（排除 `0000` 全缺失和 `1111` 全可用）
+
+#### result.txt 格式
 
 ```
 ssim     psnr     mse      mae      fid     lpips
-0.876543   28.123456  0.001234  0.023456  45.678901   0.123456
+0.891234   28.456789  0.001234  0.012345  -1.000000   0.056789
 ```
 
-#### 推理时间预估
-
-- 测试集: 73 个患者 × 14 种 mask × ~155 slices = ~158K 次推理
-- 每次推理（4步扩散）约 0.05 秒
-- 总计约 **2-3 小时**
+> **注意**: `fid` 为 -1 表示未计算（FID 需要全数据集特征统计）。LPIPS 需要 `monai` 包启用。
 
 ---
 
-### 10.5 查看和汇总所有 mask 的评估结果
+### 7.3 查看与汇总所有指标
 
 ```bash
-# 汇总所有 14 种 mask 的指标
 TASK_TS="20260605_143022"
-echo "mask_id | SSIM   | PSNR    | MSE      | MAE      | LPIPS   | FID"
-echo "--------|--------|---------|----------|----------|---------|------"
-for i in $(seq 1 14); do
-    result_file="results/task_${TASK_TS}/prediction_metric_result/${i}/result.txt"
-    if [ -f "$result_file" ]; then
-        # 读取第二行（数值行）
-        values=$(sed -n '2p' "$result_file")
-        printf "  %2d    | %s\n" "$i" "$values"
-    else
-        echo "  $i    | (pending)"
+METRIC_DIR="$COMPARE_ROOT/results/task_$TASK_TS/prediction_metric_result"
+
+# ============================================================
+# 逐 mask 查看
+# ============================================================
+for mask_str in 0111 1011 1101 1110 0011 0101 0110 1001 1010 1100 0001 0010 0100 1000; do
+    f="$METRIC_DIR/$mask_str/result.txt"
+    if [ -f "$f" ]; then
+        printf "mask_%-4s: %s\n" "$mask_str" "$(tail -1 "$f")"
     fi
 done
+
+# ============================================================
+# 按类型分组的汇总脚本
+# ============================================================
+echo ""
+echo "=============================================="
+echo " SynDiff BraTS2020 评估结果汇总"
+echo "=============================================="
+printf "%-8s %-8s %-10s %-10s %-12s %-12s %-10s\n" \
+    "mask" "type" "ssim" "psnr" "mse" "mae" "lpips"
+echo "--------------------------------------------------------------------"
+
+ONE_MISS=("0111" "1011" "1101" "1110")
+TWO_MISS=("0011" "0101" "0110" "1001" "1010" "1100")
+THREE_MISS=("0001" "0010" "0100" "1000")
+
+for mask_str in "${ONE_MISS[@]}"; do
+    f="$METRIC_DIR/$mask_str/result.txt"
+    vals=$(tail -1 "$f" 2>/dev/null || echo "N/A")
+    printf "%-8s %-8s %s\n" "$mask_str" "1-miss" "$vals"
+done
+for mask_str in "${TWO_MISS[@]}"; do
+    f="$METRIC_DIR/$mask_str/result.txt"
+    vals=$(tail -1 "$f" 2>/dev/null || echo "N/A")
+    printf "%-8s %-8s %s\n" "$mask_str" "2-miss" "$vals"
+done
+for mask_str in "${THREE_MISS[@]}"; do
+    f="$METRIC_DIR/$mask_str/result.txt"
+    vals=$(tail -1 "$f" 2>/dev/null || echo "N/A")
+    printf "%-8s %-8s %s\n" "$mask_str" "3-miss" "$vals"
+done
+echo "--------------------------------------------------------------------"
 ```
 
 ---
 
-### 10.6 超参数调优指南
-
-| 场景 | 修改参数 | 建议值 |
-|------|----------|--------|
-| 显存不足（OOM） | `--batch_size` | 保持 1（已是最小值） |
-| | `--num_channels_dae` | 降为 32 |
-| | `--ch_mult` | 改为 `1 1 2 2 4` |
-| 训练不稳定（Loss震荡） | `--r1_gamma` | 增加至 1.0 |
-| | `--lazy_reg` | 取消（设为None）每步都计算R1 |
-| 生成图像模糊 | `--num_timesteps` | 增至 8 |
-| | `--lambda_l1_loss` | 降为 0.1 |
-| 生成图像噪声多 | `--lambda_l1_loss` | 增至 1.0 |
-| 训练太慢 | `--num_epoch` | 减为 100 |
-| | `--lazy_reg` | 增至 20 |
-
----
-
-## 11. 常见问题排查
-
-### 11.1 CUDA kernel 编译警告
-
-训练启动时会看到以下消息，这是**正常的**：
-
-```
-[SynDiff] Custom CUDA kernel 'fused' failed to compile: ...
-[SynDiff] Using pure PyTorch fallback (F.leaky_relu) instead.
-```
-
-原因：PyTorch 2.7 + CUDA 12.8 的 C++ API 与原 StyleGAN2 kernel 不兼容。
-影响：无。已用纯 PyTorch 实现替代，功能等价、GPU 加速。
-
-### 11.2 训练中 Loss 为 NaN
+### 7.4 完整端到端流程
 
 ```bash
-# 可能原因及解决方案：
-# 1. 学习率过高 → 降低 lr_g 到 1e-4
-# 2. 尝试添加梯度裁剪（train.py 中搜索 loss.backward 位置添加）
-# 3. 检查数据是否有异常值
-```
+# ============================================================
+# 从训练到评估的完整流程（一键执行）
+# ============================================================
+set -e
 
-### 11.3 推理时 OOM
+export COMPARE_ROOT=/devdata2/hsh/program/python/methods/contrast_method_selected_of_diff_moe_synthesis/SynDiff__TMI2023
+cd $COMPARE_ROOT
 
-```bash
-# eval.py 逐切片处理，理论上不应 OOM
-# 如遇到，检查是否有其他进程占用 GPU：
-nvidia-smi
-# 清理 GPU 缓存：
-python3 -c "import torch; torch.cuda.empty_cache()"
-```
+# Step 1: 训练
+echo "================================"
+echo " Step 1/3: 训练 SynDiff"
+echo "================================"
+bash run_train.sh
 
-### 11.4 数据加载报 FileNotFoundError
+# Step 2: 获取 task 时间戳（最新创建的）
+TASK_TS=$(ls -t results/task_* 2>/dev/null | head -1 | grep -oP 'task_\K.*')
+echo "Task timestamp: $TASK_TS"
 
-```bash
-# 确认数据路径正确
-ls /devdata/hsh/datasets/seg_dataset/BraTS2020/brats20-dataset-training-validation/versions/1/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData/BraTS20_Training_001/
+# Step 3: 推理 + 评估（eval.py → syn_metric.py）
+echo ""
+echo "================================"
+echo " Step 2/3: 推理（14 种缺失模式）"
+echo "================================"
+python eval.py \
+    --input_path "$DATA_ROOT" \
+    --datalist_dir "$DATALIST_DIR" \
+    --output_path results \
+    --task_ts "$TASK_TS" \
+    --ckpt_epoch 200 \
+    --gpu 0 \
+    --image_size 256 --num_channels 2 --num_channels_dae 64 \
+    --ch_mult 1 1 2 2 4 4 --num_timesteps 4 --num_res_blocks 2 \
+    --embedding_type positional --z_emb_dim 256 --t_emb_dim 256
 
-# 确认 datalist 中的 patient ID 能在数据目录中找到
-while read pid; do
-  [ -d "/devdata/hsh/datasets/seg_dataset/BraTS2020/brats20-dataset-training-validation/versions/1/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData/$pid" ] || echo "MISSING: $pid"
-done < datalist/BraTS2020/train.list
+echo ""
+echo "================================"
+echo " Step 3/3: 评估指标"
+echo "================================"
+bash run_eval.sh "$TASK_TS" --metrics_only
+
+echo ""
+echo "================================"
+echo " ✅ 全部完成！"
+echo " 模型: results/task_$TASK_TS/models/"
+echo " 预测: results/task_$TASK_TS/prediction/"
+echo "       子目录: 0111 1011 1101 1110 0011 0101 0110 1001 1010 1100 0001 0010 0100 1000"
+echo " 指标: results/task_$TASK_TS/prediction_metric_result/"
+echo "================================"
 ```
 
 ---
 
-## 12. 文件清单
+### 7.5 常见问题排查
+
+#### 问题1：CUDA Out of Memory
+
+```bash
+# 解决: batch_size 已经是 1 (最小值)
+# 如果仍然 OOM，减小 num_channels_dae
+python train.py ... --num_channels_dae 32
+# 或减少 ch_mult
+python train.py ... --ch_mult 1 1 2 2 4
+```
+
+#### 问题2：找不到模态文件
+
+```bash
+# 检查数据目录结构是否匹配
+ls $DATA_ROOT/BraTS20_Training_001/
+# 应该包含: *_flair.nii(.gz), *_t1.nii(.gz), *_t1ce.nii(.gz), *_t2.nii(.gz)
+
+# 代码会自动尝试 .nii 和 .nii.gz 两种后缀
+```
+
+#### 问题3：TensorBoard 无法启动
+
+```bash
+# 安装 tensorboard
+pip install tensorboard
+
+# 如果端口被占用:
+tensorboard --logdir results/task_*/tensorboard --port 6007
+```
+
+#### 问题4：eval.py 找不到 checkpoint
+
+```bash
+# 确认 models 目录中有对应 epoch 的权重文件
+ls results/task_$TASK_TS/models/
+
+# 文件命名格式: {network_name}_{epoch}.pth
+# 例如: gen_diffusive_1_200.pth, gen_non_diffusive_1to2_200.pth
+
+# 如果使用 "final" 作为 epoch，请确保存在对应的 pth 文件
+# 默认使用 epoch=200
+```
+
+#### 问题5：训练速度过慢
+
+```bash
+# num_workers 调整（根据 CPU 核心数，train.py DataLoader 中默认4）
+# 减少验证频率（train.py 中默认 epoch % 10）
+# 减少保存频率
+python train.py ... --save_ckpt_every 100 --save_content_every 100
+```
+
+---
+
+## 8. 代码适配清单
 
 | 文件 | 状态 | 说明 |
 |------|------|------|
-| `dataset.py` | 已修改 | MONAI 风格数据加载 |
-| `train.py` | 已修改 | 单GPU + TensorBoard |
-| `eval.py` | 新建 | 14模式推理评估 |
-| `utils/op/fused_act.py` | 已修改 | CUDA kernel → 纯 PyTorch fallback |
-| `utils/op/upfirdn2d.py` | 已修改 | CUDA kernel → 纯 PyTorch fallback |
-| `run_train.sh` | 新建 | 训练启动脚本 |
-| `run_eval.sh` | 新建 | 评估启动脚本 |
-| `summary.md` | 新建 | 本报告 |
-| `git_learning.md` | 新建 | Git 命令记录 |
-| `.gitignore` | 已修改 | 排除 results/ 等 |
+| `dataset.py` | ✅ 已修改 | MONAI 风格 NIfTI 加载，支持 datalist_dir 参数 |
+| `train.py` | ✅ 已修改 | 单GPU + TensorBoard + 全局路径变量 |
+| `eval.py` | ✅ 已重写 | 仅预测合成，14 mask 模式，NIfTI 保存，无指标耦合 |
+| `utils/op/fused_act.py` | ✅ 已修改 | CUDA kernel → 纯 PyTorch fallback |
+| `utils/op/upfirdn2d.py` | ✅ 已修改 | CUDA kernel → 纯 PyTorch fallback |
+| `run_train.sh` | ✅ 已更新 | 全局路径变量 + 完整参数 |
+| `run_eval.sh` | ✅ 已更新 | 两步 pipeline (eval → metrics) |
+| `backbones/` | 未修改 | 模型架构保持原样 |
 
-## 13. 已知限制与注意事项
+## 9. 已知限制与注意事项
 
-1. **2D vs 3D**: SynDiff 原生为2D架构，3D体积需逐切片处理再拼接。这可能导致切片间不一致性。
+1. **2D vs 3D**: SynDiff 原生为 2D 架构，3D 体积需逐切片处理再拼接。可能导致切片间不一致。
 2. **成对翻译**: SynDiff 设计为两两模态翻译 (1→1)，处理多模态缺失需级联推理（选可用模态→生成缺失模态）。
-3. **训练随机性**: 训练时随机采样源-目标对，模型需要学习所有12种有向模态对。200 epochs 可能不足以充分训练所有对。
-4. **CUDA 自定义算子**: 已通过纯 PyTorch 替代方案解决。编译失败时会自动降级，不影响训练和推理。
+3. **训练随机性**: 训练时随机采样源-目标对，模型需要学习所有 12 种有向模态对。
+4. **CUDA 自定义算子**: 已通过纯 PyTorch 替代方案解决。编译失败时会自动降级。
 5. **GPU 显存**: batch_size=1 适配 48G 显存，2D 切片处理相对轻量。
-6. **依赖**: 需要 `nibabel`, `opencv-python`, `tensorboard`, `monai` (仅评估)，原 `tensorflow` 依赖已移除。
+6. **移植性**: 所有路径通过全局变量设置，本地电脑和服务器之间只需修改 `$DATA_ROOT`。
 
 ---
-*报告生成时间: 2026-06-05*
+
+*报告生成时间: 2026-06-11*
 *分支: experiment/SynDiff_adapt*
