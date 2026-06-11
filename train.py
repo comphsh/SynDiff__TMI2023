@@ -323,6 +323,7 @@ def train_syndiff(args):
 
     # ===== Training loop =====
     global_step = 0
+    total_steps_per_epoch = len(data_loader)
 
     for epoch in range(0, args.num_epoch + 1):
         # Track epoch losses
@@ -546,10 +547,12 @@ def train_syndiff(args):
 
             global_step += 1
 
-            # Log iteration-level losses
+            # Log iteration-level losses (print every 100 steps)
             if iteration % 100 == 0:
-                print(f'epoch {epoch} iter {iteration}, '
-                      f'G-Cycle: {errG_cycle.item():.4f}, G-L1: {errG_L1.item():.4f}, '
+                print(f'Epoch [{epoch}/{args.num_epoch}], '
+                      f'Step [{iteration}/{total_steps_per_epoch}], '
+                      f'Global Step: {global_step}')
+                print(f'  G-Cycle: {errG_cycle.item():.4f}, G-L1: {errG_L1.item():.4f}, '
                       f'G-Adv: {errG_adv.item():.4f}, G-cycle-Adv: {errG_cycle_adv.item():.4f}, '
                       f'G-Sum: {errG.item():.4f}, D: {errD.item():.4f}, D-cycle: {errD_cycle.item():.4f}')
 
@@ -587,7 +590,8 @@ def train_syndiff(args):
         writer.add_scalar('epoch/lr_g', optimizer_gen_diffusive_1.param_groups[0]['lr'], epoch)
         writer.add_scalar('epoch/lr_d', optimizer_disc_diffusive_1.param_groups[0]['lr'], epoch)
 
-        print(f'=== Epoch {epoch} ===')
+        print(f'=== End of Epoch [{epoch}/{args.num_epoch}], '
+              f'Total Steps: {global_step} ===')
         print(f'  G-Cycle: {epoch_losses["G_cycle"]:.4f}, G-L1: {epoch_losses["G_L1"]:.4f}, '
               f'G-Adv: {epoch_losses["G_adv"]:.4f}, G-cycle-Adv: {epoch_losses["G_cycle_adv"]:.4f}')
         print(f'  G-Total: {epoch_losses["G_total"]:.4f}, D: {epoch_losses["D_total"]:.4f}, '

@@ -1,17 +1,22 @@
 """
 Inference (prediction) script for SynDiff on BraTS2020.
 
-For each test patient, generates all 14 missing modality combinations:
-- mask 0111/1011/1101/1110:  1 modality missing  (4 patterns)
-- mask 0011/0101/0110/1001/1010/1100: 2 modalities missing (6 patterns)
-- mask 0001/0010/0100/1000:  3 modalities missing (4 patterns)
+For each test patient, generates all 14 missing modality combinations
+and saves ONLY the synthesized images (no GT, no input — global DATA_ROOT
+serves as the single source of truth).
 
-Saves:
-- predictions: results/task_{timestamp}/prediction/{mask_str}/
+Mask order follows D2Diff convention:
+- mask 0001/0010/0100/1000: 3 missing modalities (4 patterns)
+- mask 0011/0101/0110/1001/1010/1100: 2 missing (6 patterns)
+- mask 0111/1011/1101/1110: 1 missing (4 patterns)
 
-This script ONLY does inference. Metrics are computed separately by syn_metric.py.
+Output structure:
+  prediction/{mask_str}/{patient_id}/{patient_id}_{mod}_syn.nii.gz
 
-Mask format: 'flair_t1_t1ce_t2' where 1=available, 0=missing.
+This script ONLY does inference. Metrics are computed separately by the
+user's global evaluation script.
+
+Mask format: 'flair_t1_t1ce_t2', 1=available, 0=missing
 """
 
 import argparse
@@ -21,9 +26,7 @@ import os
 import sys
 import nibabel as nib
 import cv2
-import datetime
 
-# Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
@@ -64,18 +67,15 @@ def get_sigma_schedule(args, device):
     beta_min = args.beta_min
     beta_max = args.beta_max
     eps_small = 1e-3
-
     t = np.arange(0, n_timestep + 1, dtype=np.float64)
     t = t / n_timestep
     t = torch.from_numpy(t) * (1. - eps_small) + eps_small
-
     if args.use_geometric:
         var = var_func_geometric(t, beta_min, beta_max)
     else:
         var = var_func_vp(t, beta_min, beta_max)
     alpha_bars = 1.0 - var
     betas = 1 - alpha_bars[1:] / alpha_bars[:-1]
-
     first = torch.tensor(1e-8)
     betas = torch.cat((first[None], betas)).to(device)
     betas = betas.type(torch.float32)
@@ -95,9 +95,6 @@ class Posterior_Coefficients():
              self.alphas_cumprod[:-1]), 0)
         self.posterior_variance = (
             self.betas * (1 - self.alphas_cumprod_prev) / (1 - self.alphas_cumprod))
-        self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
-        self.sqrt_recip_alphas_cumprod = torch.rsqrt(self.alphas_cumprod)
-        self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1 / self.alphas_cumprod - 1)
         self.posterior_mean_coef1 = (
             self.betas * torch.sqrt(self.alphas_cumprod_prev) /
             (1 - self.alphas_cumprod))
@@ -112,8 +109,7 @@ def sample_posterior(coefficients, x_0, x_t, t):
     def q_posterior(x_0, x_t, t):
         mean = (
             extract(coefficients.posterior_mean_coef1, t, x_t.shape) * x_0
-            + extract(coefficients.posterior_mean_coef2, t, x_t.shape) * x_t
-        )
+            + extract(coefficients.posterior_mean_coef2, t, x_t.shape) * x_t)
         var = extract(coefficients.posterior_variance, t, x_t.shape)
         log_var_clipped = extract(
             coefficients.posterior_log_variance_clipped, t, x_t.shape)
@@ -125,12 +121,11 @@ def sample_posterior(coefficients, x_0, x_t, t):
         nonzero_mask = (1 - (t == 0).type(torch.float32))
         return mean + nonzero_mask[:, None, None, None] * torch.exp(
             0.5 * log_var) * noise
-
     return p_sample(x_0, x_t, t)
 
 
 def sample_from_model(coefficients, generator, n_time, x_init, T, opt):
-    """Generate a sample using the diffusive generator (4-step reverse diffusion)."""
+    """4-step reverse diffusion."""
     x = x_init[:, [0], :]
     source = x_init[:, [1], :]
     with torch.no_grad():
@@ -143,33 +138,32 @@ def sample_from_model(coefficients, generator, n_time, x_init, T, opt):
     return x
 
 
-# ============== Missing Modality Patterns ==============
+# ============== Mask Patterns (D2Diff order) ==============
 
 MODALITY_ORDER = ['flair', 't1', 't1ce', 't2']
 
-# 14 patterns (mask_str: 'flair_t1_t1ce_t2', 1=available, 0=missing)
+# 14 patterns (1=available, 0=missing), D2Diff convention
 MASK_PATTERNS = [
-    '0111',   # 1:  flair missing
-    '1011',   # 2:  t1 missing
-    '1101',   # 3:  t1ce missing
-    '1110',   # 4:  t2 missing
-    '0011',   # 5:  flair+t1 missing
-    '0101',   # 6:  flair+t1ce missing
-    '0110',   # 7:  flair+t2 missing
-    '1001',   # 8:  t1+t1ce missing
-    '1010',   # 9:  t1+t2 missing
-    '1100',   # 10: t1ce+t2 missing
-    '0001',   # 11: flair+t1+t1ce missing
-    '0010',   # 12: flair+t1+t2 missing
-    '0100',   # 13: flair+t1ce+t2 missing
-    '1000',   # 14: t1+t1ce+t2 missing
+    '0001',   # Only t2 available (3-miss)
+    '0010',   # Only t1ce available (3-miss)
+    '0011',   # t1ce + t2 (2-miss)
+    '0100',   # Only t1 available (3-miss)
+    '0101',   # t1 + t2 (2-miss)
+    '0110',   # t1 + t1ce (2-miss)
+    '0111',   # t1 + t1ce + t2 (1-miss: flair)
+    '1000',   # Only flair available (3-miss)
+    '1001',   # flair + t2 (2-miss)
+    '1010',   # flair + t1ce (2-miss)
+    '1011',   # flair + t1ce + t2 (1-miss: t1)
+    '1100',   # flair + t1 (2-miss)
+    '1101',   # flair + t1 + t2 (1-miss: t1ce)
+    '1110',   # flair + t1 + t1ce (1-miss: t2)
 ]
 
 
-# ============== Data Loading Helpers ==============
+# ============== Helpers ==============
 
 def load_patient_ids(phase, datalist_dir):
-    """Load patient IDs from datalist file."""
     list_file = os.path.join(datalist_dir, f'{phase}.list')
     if not os.path.exists(list_file):
         raise FileNotFoundError(f"Datalist not found: {list_file}")
@@ -178,13 +172,11 @@ def load_patient_ids(phase, datalist_dir):
 
 
 def load_nifti_volume(file_path):
-    """Load a nifti volume."""
     nii = nib.load(file_path)
     return nii.get_fdata().astype(np.float32), nii.affine
 
 
 def normalize_volume(data, lower=0, upper=99.5, b_min=0.0, b_max=1.0):
-    """Percentile-based normalization (MONAI equivalent)."""
     v_min = np.percentile(data, lower)
     v_max = np.percentile(data, upper)
     data = np.clip(data, v_min, v_max)
@@ -196,7 +188,6 @@ def normalize_volume(data, lower=0, upper=99.5, b_min=0.0, b_max=1.0):
 
 
 def load_checkpoint(checkpoint_file, netG, device='cuda:0'):
-    """Load model checkpoint, handling DDP 'module.' prefix."""
     checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
     new_state = {}
     for key, val in checkpoint.items():
@@ -207,15 +198,13 @@ def load_checkpoint(checkpoint_file, netG, device='cuda:0'):
     return netG
 
 
-# ============== Main Evaluation ==============
+# ============== Main ==============
 
 def run_evaluation(args):
-    """Main evaluation: load model → generate predictions for all 14 masks."""
-    device = torch.device(
-        f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
+    print(f"Device: {device}")
 
-    # ---- Setup paths ----
+    # ---- Paths ----
     task_dir = os.path.join(args.output_path, f'task_{args.task_ts}')
     model_dir = os.path.join(task_dir, 'models')
     pred_base = os.path.join(task_dir, 'prediction')
@@ -233,31 +222,24 @@ def run_evaluation(args):
         netG='resnet_6blocks', gpu_ids=[args.gpu])
     args.num_channels = args_save
 
-    # Load checkpoint weights
-    ckpt_epoch = args.ckpt_epoch
-    checkpoint_file = os.path.join(model_dir, '{}_{}.pth')
-
+    ckpt = args.ckpt_epoch
+    ckpt_fmt = os.path.join(model_dir, '{}_{}.pth')
     gen_diffusive_1 = load_checkpoint(
-        checkpoint_file.format('gen_diffusive_1', ckpt_epoch),
-        gen_diffusive_1, device)
+        ckpt_fmt.format('gen_diffusive_1', ckpt), gen_diffusive_1, device)
     gen_diffusive_2 = load_checkpoint(
-        checkpoint_file.format('gen_diffusive_2', ckpt_epoch),
-        gen_diffusive_2, device)
+        ckpt_fmt.format('gen_diffusive_2', ckpt), gen_diffusive_2, device)
     gen_non_diffusive_1to2 = load_checkpoint(
-        checkpoint_file.format('gen_non_diffusive_1to2', ckpt_epoch),
-        gen_non_diffusive_1to2, device)
+        ckpt_fmt.format('gen_non_diffusive_1to2', ckpt), gen_non_diffusive_1to2, device)
     gen_non_diffusive_2to1 = load_checkpoint(
-        checkpoint_file.format('gen_non_diffusive_2to1', ckpt_epoch),
-        gen_non_diffusive_2to1, device)
-
-    print(f"Models loaded from {model_dir}, epoch={ckpt_epoch}")
+        ckpt_fmt.format('gen_non_diffusive_2to1', ckpt), gen_non_diffusive_2to1, device)
+    print(f"Models loaded from {model_dir}, epoch={ckpt}")
 
     # ---- Setup diffusion ----
     T = get_time_schedule(args, device)
     pos_coeff = Posterior_Coefficients(args, device)
     to_range_0_1 = lambda x: (x + 1.) / 2.
 
-    # ---- Create output directories ----
+    # ---- Create output dirs ----
     for mask_str in MASK_PATTERNS:
         os.makedirs(os.path.join(pred_base, mask_str), exist_ok=True)
 
@@ -267,147 +249,114 @@ def run_evaluation(args):
 
     # ---- Process each patient ----
     for pidx, patient_id in enumerate(patient_ids):
-        print(f"\n[{pidx+1}/{len(patient_ids)}] Processing: {patient_id}")
+        print(f"\n[{pidx+1}/{len(patient_ids)}] {patient_id}")
 
         patient_dir = os.path.join(args.input_path, patient_id)
         if not os.path.isdir(patient_dir):
-            print(f"  [WARNING] Patient dir not found: {patient_dir}")
+            print(f"  [WARN] Dir not found: {patient_dir}")
             continue
 
-        # Load all 4 modality volumes
+        # Load 4 modalities
         volumes = {}
         affine = None
         valid = True
         for mod in MODALITY_ORDER:
-            # Try .nii first, then .nii.gz
-            nii_path = os.path.join(patient_dir, f'{patient_id}_{mod}.nii')
-            if not os.path.exists(nii_path):
-                nii_path = os.path.join(patient_dir, f'{patient_id}_{mod}.nii.gz')
-            if not os.path.exists(nii_path):
-                print(f"  [WARNING] Missing file: {nii_path}, skipping patient")
+            p = os.path.join(patient_dir, f'{patient_id}_{mod}.nii')
+            if not os.path.exists(p):
+                p = os.path.join(patient_dir, f'{patient_id}_{mod}.nii.gz')
+            if not os.path.exists(p):
+                print(f"  [WARN] Missing: {p}")
                 valid = False
                 break
-            data, aff = load_nifti_volume(nii_path)
-            data = normalize_volume(data)
-            volumes[mod] = data  # (H, W, D)
+            data, aff = load_nifti_volume(p)
+            volumes[mod] = normalize_volume(data)
             if affine is None:
                 affine = aff
-
         if not valid:
             continue
 
         num_slices = volumes[MODALITY_ORDER[0]].shape[2]
         orig_h, orig_w = volumes[MODALITY_ORDER[0]].shape[:2]
 
-        # Pre-process all slices to [-1,1] range
-        slices_11 = {}  # [-1, 1] normalized
+        # Pre-process slices to [-1, 1]
+        slices_11 = {}
         for mod in MODALITY_ORDER:
             vol = volumes[mod]
-            mod_slices = np.zeros(
-                (num_slices, args.image_size, args.image_size), dtype=np.float32)
+            arr = np.zeros((num_slices, args.image_size, args.image_size), dtype=np.float32)
             for s in range(num_slices):
-                slc = vol[:, :, s].copy()
-                slc = np.flipud(slc)
-                if slc.shape[0] != args.image_size or slc.shape[1] != args.image_size:
+                slc = np.flipud(vol[:, :, s].copy())
+                if slc.shape != (args.image_size, args.image_size):
                     slc = cv2.resize(slc, (args.image_size, args.image_size),
                                      interpolation=cv2.INTER_LINEAR)
-                mod_slices[s] = slc * 2.0 - 1.0  # [0,1] → [-1,1]
-            slices_11[mod] = mod_slices
+                arr[s] = slc * 2.0 - 1.0
+            slices_11[mod] = arr
 
-        # For each mask pattern: synthesize missing modalities
+        # Synthesize missing modalities for each mask
         for mask_str in MASK_PATTERNS:
             mask = [int(c) for c in mask_str]
-            available_indices = [i for i, v in enumerate(mask) if v == 1]
-            missing_indices = [i for i, v in enumerate(mask) if v == 0]
+            available = [i for i, v in enumerate(mask) if v == 1]
+            missing = [i for i, v in enumerate(mask) if v == 0]
 
-            # Synthesize each missing modality
-            predictions = {}
-            for mi in missing_indices:
-                pred_vol = np.zeros(
-                    (num_slices, args.image_size, args.image_size), dtype=np.float32)
+            if not missing:
+                continue
 
-                # Pick the first available modality as source
-                si = available_indices[0]
+            # For each missing modality, synthesize from first available source
+            for mi in missing:
+                si = available[0]
+                pred_vol = np.zeros((num_slices, args.image_size, args.image_size),
+                                    dtype=np.float32)
 
                 for s in range(num_slices):
-                    source_slice = torch.from_numpy(
+                    src = torch.from_numpy(
                         slices_11[MODALITY_ORDER[si]][s]
-                    ).unsqueeze(0).to(device)  # (1, H, W)
+                    ).unsqueeze(0).to(device)
 
-                    # Use gen_diffusive_1 + gen_non_diffusive_1to2 for
-                    # source→target translation. Since training randomly
-                    # samples pairs from all 4 modalities, this generalizes.
                     with torch.no_grad():
-                        translated = gen_non_diffusive_1to2(
-                            source_slice.unsqueeze(0))  # (1, 1, H, W)
-                        x_init = torch.cat(
-                            [torch.randn_like(translated), translated], dim=1)
+                        translated = gen_non_diffusive_1to2(src.unsqueeze(0))
+                        x_init = torch.cat([torch.randn_like(translated), translated], dim=1)
                         pred = sample_from_model(
                             pos_coeff, gen_diffusive_1,
                             args.num_timesteps, x_init, T, args)
 
-                    pred_01 = to_range_0_1(pred).squeeze().cpu().numpy()
-                    pred_vol[s] = pred_01
+                    pred_vol[s] = to_range_0_1(pred).squeeze().cpu().numpy()
 
-                predictions[mi] = pred_vol
-
-            # ---- Save predictions as NIfTI ----
-            for mi in missing_indices:
-                # Resize back to original dimensions
-                vol_pred = np.zeros((orig_h, orig_w, num_slices), dtype=np.float32)
+                # Resize back, flip back, save
+                vol_out = np.zeros((orig_h, orig_w, num_slices), dtype=np.float32)
                 for s in range(num_slices):
-                    if orig_h != args.image_size or orig_w != args.image_size:
-                        vol_pred[:, :, s] = cv2.resize(
-                            predictions[mi][s], (orig_w, orig_h),
-                            interpolation=cv2.INTER_LINEAR)
+                    if (orig_h, orig_w) != (args.image_size, args.image_size):
+                        vol_out[:, :, s] = cv2.resize(
+                            pred_vol[s], (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
                     else:
-                        vol_pred[:, :, s] = predictions[mi][s]
-                    vol_pred[:, :, s] = np.flipud(vol_pred[:, :, s])
+                        vol_out[:, :, s] = pred_vol[s]
+                    vol_out[:, :, s] = np.flipud(vol_out[:, :, s])
 
+                # Save: {mask_str}/{patient_id}/{patient_id}_{mod}_syn.nii.gz
                 mod_name = MODALITY_ORDER[mi]
-                save_path = os.path.join(
-                    pred_base, mask_str, f'{patient_id}_{mod_name}_syn.nii.gz')
-                nii = nib.Nifti1Image(vol_pred, affine=affine)
-                nib.save(nii, save_path)
+                out_dir = os.path.join(pred_base, mask_str, patient_id)
+                os.makedirs(out_dir, exist_ok=True)
+                out_path = os.path.join(out_dir, f'{patient_id}_{mod_name}_syn.nii.gz')
+                nib.save(nib.Nifti1Image(vol_out, affine=affine), out_path)
 
-            # ---- Save input (available) and ground truth (missing) ----
-            for si in available_indices:
-                mod_name = MODALITY_ORDER[si]
-                save_path = os.path.join(
-                    pred_base, mask_str, f'{patient_id}_{mod_name}_input.nii.gz')
-                nii = nib.Nifti1Image(
-                    volumes[mod_name].astype(np.float32), affine=affine)
-                nib.save(nii, save_path)
-
-            for mi in missing_indices:
-                mod_name = MODALITY_ORDER[mi]
-                save_path = os.path.join(
-                    pred_base, mask_str, f'{patient_id}_{mod_name}_gt.nii.gz')
-                nii = nib.Nifti1Image(
-                    volumes[mod_name].astype(np.float32), affine=affine)
-                nib.save(nii, save_path)
-
-    print(f"\n=== Prediction complete. Results in: {pred_base}/ ===")
+    print(f"\nDone. Predictions saved to: {pred_base}/")
 
 
 def main():
-    parser = argparse.ArgumentParser('syndiff evaluation (prediction only)')
+    parser = argparse.ArgumentParser('SynDiff eval (prediction-only)')
 
-    # Path arguments
+    # Path args
     parser.add_argument('--input_path', required=True,
-                        help='Path to BraTS2020 patient directories ($DATA_ROOT)')
+                        help='Path to BraTS2020 data ($DATA_ROOT)')
     parser.add_argument('--datalist_dir', required=True,
-                        help='Path to datalist directory ($DATALIST_DIR)')
+                        help='Path to datalist ($DATALIST_DIR)')
     parser.add_argument('--output_path', required=True,
-                        help='Path to results directory ($COMPARE_ROOT/results)')
+                        help='Results root ($COMPARE_ROOT/results)')
     parser.add_argument('--task_ts', required=True,
-                        help='Task timestamp (e.g., 20250101_120000)')
+                        help='Task timestamp (e.g. 20260605_143022)')
     parser.add_argument('--ckpt_epoch', default='200',
-                        help='Checkpoint epoch to use (default: 200)')
-    parser.add_argument('--gpu', type=int, default=0,
-                        help='GPU device ID')
+                        help='Checkpoint epoch (default: 200)')
+    parser.add_argument('--gpu', type=int, default=0)
 
-    # Model architecture (must match training)
+    # Model arch (must match training)
     parser.add_argument('--image_size', type=int, default=256)
     parser.add_argument('--num_channels', type=int, default=2)
     parser.add_argument('--centered', action='store_false', default=True)

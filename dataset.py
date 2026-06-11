@@ -24,22 +24,22 @@ MODALITY_ORDER = ['flair', 't1', 't1ce', 't2']
 
 # 14 missing modality patterns (1=available, 0=missing)
 # Pattern format: 'flair_t1_t1ce_t2'
-# Only patterns with at least 1 available and at least 1 missing are valid
+# Order follows D2Diff convention: sorted by number of available modalities
 MASK_PATTERNS = [
-    '0111',  # mask_id=1:  flair missing, t1+t1ce+t2 available (1 missing)
-    '1011',  # mask_id=2:  t1 missing, flair+t1ce+t2 available
-    '1101',  # mask_id=3:  t1ce missing, flair+t1+t2 available
-    '1110',  # mask_id=4:  t2 missing, flair+t1+t1ce available
-    '0011',  # mask_id=5:  flair+t1 missing, t1ce+t2 available (2 missing)
-    '0101',  # mask_id=6:  flair+t1ce missing, t1+t2 available
-    '0110',  # mask_id=7:  flair+t2 missing, t1+t1ce available
-    '1001',  # mask_id=8:  t1+t1ce missing, flair+t2 available
-    '1010',  # mask_id=9:  t1+t2 missing, flair+t1ce available
-    '1100',  # mask_id=10: t1ce+t2 missing, flair+t1 available
-    '0001',  # mask_id=11: flair+t1+t1ce missing, t2 available (3 missing)
-    '0010',  # mask_id=12: flair+t1+t2 missing, t1ce available
-    '0100',  # mask_id=13: flair+t1ce+t2 missing, t1 available
-    '1000',  # mask_id=14: t1+t1ce+t2 missing, flair available
+    '0001',  # Only t2 available (3-miss)
+    '0010',  # Only t1ce available (3-miss)
+    '0011',  # t1ce + t2 (2-miss)
+    '0100',  # Only t1 available (3-miss)
+    '0101',  # t1 + t2 (2-miss)
+    '0110',  # t1 + t1ce (2-miss)
+    '0111',  # t1 + t1ce + t2 (1-miss: flair)
+    '1000',  # Only flair available (3-miss)
+    '1001',  # flair + t2 (2-miss)
+    '1010',  # flair + t1ce (2-miss)
+    '1011',  # flair + t1ce + t2 (1-miss: t1)
+    '1100',  # flair + t1 (2-miss)
+    '1101',  # flair + t1 + t2 (1-miss: t1ce)
+    '1110',  # flair + t1 + t1ce (1-miss: t2)
 ]
 
 
