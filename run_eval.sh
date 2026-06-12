@@ -6,8 +6,9 @@
 #   bash run_eval.sh <task_timestamp> [ckpt_epoch]
 #
 # Examples:
-#   bash run_eval.sh 20260605_143022          # Default epoch 200
-#   bash run_eval.sh 20260605_143022 200      # Specific epoch
+#   bash run_eval.sh 20260605_143022              # Default latest.pt
+#   bash run_eval.sh 20260605_143022 latest.pt     # latest.pt (default)
+#   bash run_eval.sh 20260605_143022 final_model.pt  # final_model.pt
 #
 # This only runs prediction (saves synthesized images).
 # Metrics are computed separately by your global evaluation script.
@@ -22,8 +23,8 @@ DATALIST_DIR="${COMPARE_ROOT}/datalist/BraTS2020"
 OUTPUT_PATH="${COMPARE_ROOT}/results"
 
 # --- Parse Args ---
-TASK_TS="${1:?Usage: bash run_eval.sh <task_timestamp> [ckpt_epoch]}"
-CKPT_EPOCH="${2:-200}"
+TASK_TS="${1:?Usage: bash run_eval.sh <task_timestamp> [ckpt_name]}"
+CKPT_NAME="${2:-latest.pt}"
 
 TASK_DIR="${OUTPUT_PATH}/task_${TASK_TS}"
 MODEL_DIR="${TASK_DIR}/models"
@@ -35,7 +36,7 @@ echo " SynDiff Inference - BraTS2020"
 echo "============================================"
 echo "Project:   ${COMPARE_ROOT}"
 echo "Task ts:   ${TASK_TS}"
-echo "Checkpoint: epoch=${CKPT_EPOCH}"
+echo "Checkpoint: ${CKPT_NAME}"
 echo "Output:    ${PRED_DIR}/"
 echo "============================================"
 
@@ -52,7 +53,7 @@ python eval.py \
     --datalist_dir "${DATALIST_DIR}" \
     --output_path "${OUTPUT_PATH}" \
     --task_ts "${TASK_TS}" \
-    --ckpt_epoch "${CKPT_EPOCH}" \
+    --ckpt_name "${CKPT_NAME}" \
     --gpu 0 \
     --image_size 256 \
     --num_channels 2 \

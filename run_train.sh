@@ -61,9 +61,7 @@ python train.py \
     --lazy_reg 10 \
     --lambda_l1_loss 0.5 \
     --nz 100 \
-    --save_content \
-    --save_ckpt_every 50 \
-    --save_content_every 50 \
+    --log_interval 10 \
     --exp BraTS20_syndiff \
     --input_path "${DATA_ROOT}" \
     --datalist_dir "${DATALIST_DIR}" \

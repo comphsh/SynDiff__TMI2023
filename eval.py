@@ -10,8 +10,8 @@ Mask order follows D2Diff convention:
 - mask 0011/0101/0110/1001/1010/1100: 2 missing (6 patterns)
 - mask 0111/1011/1101/1110: 1 missing (4 patterns)
 
-Output structure:
-  prediction/{mask_str}/{patient_id}/{patient_id}_{mod}_syn.nii.gz
+Output structure (Rule 7b):
+  prediction/{mask_str}/{patient_id}/{patient_id}_{mod}.nii.gz
 
 This script ONLY does inference. Metrics are computed separately by the
 user's global evaluation script.
@@ -24,8 +24,10 @@ import torch
 import numpy as np
 import os
 import sys
+import time
 import nibabel as nib
 import cv2
+from tqdm import tqdm
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
@@ -187,17 +189,6 @@ def normalize_volume(data, lower=0, upper=99.5, b_min=0.0, b_max=1.0):
     return data
 
 
-def load_checkpoint(checkpoint_file, netG, device='cuda:0'):
-    checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
-    new_state = {}
-    for key, val in checkpoint.items():
-        new_key = key[7:] if key.startswith('module.') else key
-        new_state[new_key] = val
-    netG.load_state_dict(new_state)
-    netG.eval()
-    return netG
-
-
 # ============== Main ==============
 
 def run_evaluation(args):
@@ -222,17 +213,34 @@ def run_evaluation(args):
         netG='resnet_6blocks', gpu_ids=[args.gpu])
     args.num_channels = args_save
 
-    ckpt = args.ckpt_epoch
-    ckpt_fmt = os.path.join(model_dir, '{}_{}.pth')
-    gen_diffusive_1 = load_checkpoint(
-        ckpt_fmt.format('gen_diffusive_1', ckpt), gen_diffusive_1, device)
-    gen_diffusive_2 = load_checkpoint(
-        ckpt_fmt.format('gen_diffusive_2', ckpt), gen_diffusive_2, device)
-    gen_non_diffusive_1to2 = load_checkpoint(
-        ckpt_fmt.format('gen_non_diffusive_1to2', ckpt), gen_non_diffusive_1to2, device)
-    gen_non_diffusive_2to1 = load_checkpoint(
-        ckpt_fmt.format('gen_non_diffusive_2to1', ckpt), gen_non_diffusive_2to1, device)
-    print(f"Models loaded from {model_dir}, epoch={ckpt}")
+    # Load unified checkpoint (Rule 9 format)
+    ckpt_path = os.path.join(model_dir, args.ckpt_name)
+    print(f"Loading checkpoint: {ckpt_path}")
+    ckpt_data = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+    # Extract generator state dicts from combined checkpoint
+    def extract_state(combined, key_prefix):
+        """Load state dict from combined checkpoint, handling DDP prefix."""
+        state_dict = combined.get(key_prefix)
+        if state_dict is None:
+            raise KeyError(f"Key '{key_prefix}' not found in checkpoint")
+        new_state = {}
+        for k, v in state_dict.items():
+            new_state[k[7:] if k.startswith('module.') else k] = v
+        return new_state
+
+    gen_diffusive_1.load_state_dict(extract_state(ckpt_data, 'gen_diffusive_1_dict'))
+    gen_diffusive_2.load_state_dict(extract_state(ckpt_data, 'gen_diffusive_2_dict'))
+    gen_non_diffusive_1to2.load_state_dict(extract_state(ckpt_data, 'gen_non_diffusive_1to2_dict'))
+    gen_non_diffusive_2to1.load_state_dict(extract_state(ckpt_data, 'gen_non_diffusive_2to1_dict'))
+
+    gen_diffusive_1.eval()
+    gen_diffusive_2.eval()
+    gen_non_diffusive_1to2.eval()
+    gen_non_diffusive_2to1.eval()
+
+    epoch_info = ckpt_data.get('epoch', '?')
+    print(f"Models loaded, epoch={epoch_info}")
 
     # ---- Setup diffusion ----
     T = get_time_schedule(args, device)
@@ -247,113 +255,128 @@ def run_evaluation(args):
     patient_ids = load_patient_ids('test', args.datalist_dir)
     print(f"Test patients: {len(patient_ids)}")
 
-    # ---- Process each patient ----
-    for pidx, patient_id in enumerate(patient_ids):
-        print(f"\n[{pidx+1}/{len(patient_ids)}] {patient_id}")
+    # ---- Estimated time (Rule 7b) ----
+    n_masks = len(MASK_PATTERNS)
+    n_patients = len(patient_ids)
+    est_sec = n_masks * n_patients * 155 * 0.01  # ~0.01s per slice per mask
+    est_h = est_sec / 3600
+    print(f"[INFO] Estimated total eval time: ~{est_h:.1f} h "
+          f"({n_masks} masks × {n_patients} patients)")
+    eval_start = time.time()
 
-        patient_dir = os.path.join(args.input_path, patient_id)
-        if not os.path.isdir(patient_dir):
-            print(f"  [WARN] Dir not found: {patient_dir}")
+    # ---- Three-level tqdm (Rule 7b) ----
+    for mask_str in tqdm(MASK_PATTERNS, desc='Masks', unit='mask'):
+        mask = [int(c) for c in mask_str]
+        available = [i for i, v in enumerate(mask) if v == 1]
+        missing = [i for i, v in enumerate(mask) if v == 0]
+        if not missing:
             continue
 
-        # Load 4 modalities
-        volumes = {}
-        affine = None
-        valid = True
-        for mod in MODALITY_ORDER:
-            p = os.path.join(patient_dir, f'{patient_id}_{mod}.nii')
-            if not os.path.exists(p):
-                p = os.path.join(patient_dir, f'{patient_id}_{mod}.nii.gz')
-            if not os.path.exists(p):
-                print(f"  [WARN] Missing: {p}")
-                valid = False
-                break
-            data, aff = load_nifti_volume(p)
-            volumes[mod] = normalize_volume(data)
-            if affine is None:
-                affine = aff
-        if not valid:
-            continue
-
-        num_slices = volumes[MODALITY_ORDER[0]].shape[2]
-        orig_h, orig_w = volumes[MODALITY_ORDER[0]].shape[:2]
-
-        # Pre-process slices to [-1, 1]
-        slices_11 = {}
-        for mod in MODALITY_ORDER:
-            vol = volumes[mod]
-            arr = np.zeros((num_slices, args.image_size, args.image_size), dtype=np.float32)
-            for s in range(num_slices):
-                slc = np.flipud(vol[:, :, s].copy())
-                if slc.shape != (args.image_size, args.image_size):
-                    slc = cv2.resize(slc, (args.image_size, args.image_size),
-                                     interpolation=cv2.INTER_LINEAR)
-                arr[s] = slc * 2.0 - 1.0
-            slices_11[mod] = arr
-
-        # Synthesize missing modalities for each mask
-        for mask_str in MASK_PATTERNS:
-            mask = [int(c) for c in mask_str]
-            available = [i for i, v in enumerate(mask) if v == 1]
-            missing = [i for i, v in enumerate(mask) if v == 0]
-
-            if not missing:
+        for patient_id in tqdm(patient_ids, desc=f'  Patients ({mask_str})',
+                               leave=False):
+            patient_dir = os.path.join(args.input_path, patient_id)
+            if not os.path.isdir(patient_dir):
                 continue
 
-            # For each missing modality, synthesize from first available source
+            # Load 4 modalities
+            volumes = {}
+            affine = None
+            valid = True
+            for mod in MODALITY_ORDER:
+                p = os.path.join(patient_dir, f'{patient_id}_{mod}.nii')
+                if not os.path.exists(p):
+                    p = os.path.join(patient_dir, f'{patient_id}_{mod}.nii.gz')
+                if not os.path.exists(p):
+                    valid = False
+                    break
+                data, aff = load_nifti_volume(p)
+                volumes[mod] = normalize_volume(data)
+                if affine is None:
+                    affine = aff
+            if not valid:
+                continue
+
+            num_slices = volumes[MODALITY_ORDER[0]].shape[2]
+            orig_h, orig_w = volumes[MODALITY_ORDER[0]].shape[:2]
+
+            # Pre-process slices to [-1, 1]
+            slices_11 = {}
+            for mod in MODALITY_ORDER:
+                vol = volumes[mod]
+                arr = np.zeros((num_slices, args.image_size, args.image_size),
+                               dtype=np.float32)
+                for s in range(num_slices):
+                    slc = np.flipud(vol[:, :, s].copy())
+                    if slc.shape != (args.image_size, args.image_size):
+                        slc = cv2.resize(slc, (args.image_size, args.image_size),
+                                         interpolation=cv2.INTER_LINEAR)
+                    arr[s] = slc * 2.0 - 1.0
+                slices_11[mod] = arr
+
+            # Synthesize each missing modality
             for mi in missing:
                 si = available[0]
+                mod_name = MODALITY_ORDER[mi]
+
                 pred_vol = np.zeros((num_slices, args.image_size, args.image_size),
                                     dtype=np.float32)
 
-                for s in range(num_slices):
+                for s in tqdm(range(num_slices), desc=f'    gen {mod_name}',
+                             leave=False):
                     src = torch.from_numpy(
                         slices_11[MODALITY_ORDER[si]][s]
                     ).unsqueeze(0).to(device)
 
                     with torch.no_grad():
                         translated = gen_non_diffusive_1to2(src.unsqueeze(0))
-                        x_init = torch.cat([torch.randn_like(translated), translated], dim=1)
+                        x_init = torch.cat(
+                            [torch.randn_like(translated), translated], dim=1)
                         pred = sample_from_model(
                             pos_coeff, gen_diffusive_1,
                             args.num_timesteps, x_init, T, args)
 
                     pred_vol[s] = to_range_0_1(pred).squeeze().cpu().numpy()
 
-                # Resize back, flip back, save
+                # Resize back, flip back, save (Rule 7b: {patient}_{mod}.nii.gz)
                 vol_out = np.zeros((orig_h, orig_w, num_slices), dtype=np.float32)
                 for s in range(num_slices):
                     if (orig_h, orig_w) != (args.image_size, args.image_size):
                         vol_out[:, :, s] = cv2.resize(
-                            pred_vol[s], (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+                            pred_vol[s], (orig_w, orig_h),
+                            interpolation=cv2.INTER_LINEAR)
                     else:
                         vol_out[:, :, s] = pred_vol[s]
                     vol_out[:, :, s] = np.flipud(vol_out[:, :, s])
 
-                # Save: {mask_str}/{patient_id}/{patient_id}_{mod}_syn.nii.gz
-                mod_name = MODALITY_ORDER[mi]
                 out_dir = os.path.join(pred_base, mask_str, patient_id)
                 os.makedirs(out_dir, exist_ok=True)
-                out_path = os.path.join(out_dir, f'{patient_id}_{mod_name}_syn.nii.gz')
+                out_path = os.path.join(out_dir,
+                                        f'{patient_id}_{mod_name}.nii.gz')
                 nib.save(nib.Nifti1Image(vol_out, affine=affine), out_path)
 
+    eval_elapsed = time.time() - eval_start
+    print(f"[INFO] Total time: {eval_elapsed/3600:.2f} h")
     print(f"\nDone. Predictions saved to: {pred_base}/")
 
 
 def main():
     parser = argparse.ArgumentParser('SynDiff eval (prediction-only)')
 
-    # Path args
-    parser.add_argument('--input_path', required=True,
-                        help='Path to BraTS2020 data ($DATA_ROOT)')
-    parser.add_argument('--datalist_dir', required=True,
-                        help='Path to datalist ($DATALIST_DIR)')
-    parser.add_argument('--output_path', required=True,
-                        help='Results root ($COMPARE_ROOT/results)')
+    # Path args (Rule 0: env var defaults)
+    parser.add_argument('--input_path',
+                        default=os.environ.get('DATA_ROOT'),
+                        help='Path to BraTS2020 data (env: $DATA_ROOT)')
+    parser.add_argument('--datalist_dir',
+                        default=os.environ.get('DATALIST_DIR'),
+                        help='Path to datalist (env: $DATALIST_DIR)')
+    parser.add_argument('--output_path',
+                        default=os.environ.get('COMPARE_ROOT',
+                        os.path.dirname(os.path.abspath(__file__))).rstrip('/') + '/results',
+                        help='Results root (env: $COMPARE_ROOT)')
     parser.add_argument('--task_ts', required=True,
                         help='Task timestamp (e.g. 20260605_143022)')
-    parser.add_argument('--ckpt_epoch', default='200',
-                        help='Checkpoint epoch (default: 200)')
+    parser.add_argument('--ckpt_name', default='latest.pt',
+                        help='Checkpoint filename in models/ (default: latest.pt)')
     parser.add_argument('--gpu', type=int, default=0)
 
     # Model arch (must match training)

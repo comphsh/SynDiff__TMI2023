@@ -24,6 +24,7 @@ import torchvision
 import shutil
 import time
 import datetime
+import logging
 
 from dataset import CreateDatasetSynthesis
 
@@ -186,7 +187,6 @@ def train_syndiff(args):
     torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
 
     batch_size = args.batch_size
     nz = args.nz  # latent dimension
@@ -225,9 +225,6 @@ def train_syndiff(args):
         pin_memory=True,
         drop_last=True
     )
-
-    print(f'Train data size: {len(data_loader)} batches')
-    print(f'Val data size: {len(data_loader_val)} batches')
 
     to_range_0_1 = lambda x: (x + 1.) / 2.
 
@@ -302,19 +299,67 @@ def train_syndiff(args):
     current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     task_dir = os.path.join(args.output_path, f'task_{current_time}')
     model_dir = os.path.join(task_dir, 'models')
+    tensorboard_dir = os.path.join(task_dir, 'tensorboard')
+    log_dir = os.path.join(task_dir, 'logs')
     os.makedirs(model_dir, exist_ok=True)
+    os.makedirs(tensorboard_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
 
-    # Copy source files for reproducibility
-    shutil.copyfile(__file__, os.path.join(task_dir, os.path.basename(__file__)))
+    # ---- Setup logging (Rule 8) ----
+    log_format = '[%(asctime)s][%(levelname)s] %(message)s'
+    logger = logging.getLogger('syndiff')
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    # File handler
+    fh = logging.FileHandler(os.path.join(log_dir, 'train.log'))
+    fh.setFormatter(logging.Formatter(log_format))
+    logger.addHandler(fh)
+    # Console handler
+    ch = logging.StreamHandler()
+    ch.setFormatter(logging.Formatter(log_format))
+    logger.addHandler(ch)
 
-    print(f"Experiment directory: {task_dir}")
-    print(f"Model directory: {model_dir}")
+    logger.info(f"Device: {device}")
+    logger.info(f"Experiment directory: {task_dir}")
+    logger.info(f"Train: {len(data_loader)} batches, Val: {len(data_loader_val)} batches")
+    logger.info(f"TensorBoard: {tensorboard_dir}")
+    logger.info(f"Train log: {os.path.join(log_dir, 'train.log')}")
 
     # ===== Setup TensorBoard =====
     from torch.utils.tensorboard import SummaryWriter
-    tensorboard_path = os.path.join(task_dir, 'tensorboard')
-    writer = SummaryWriter(tensorboard_path)
-    print(f"TensorBoard logs: {tensorboard_path}")
+    writer = SummaryWriter(tensorboard_dir)
+
+    # ===== Save 0.pt (initial weights, Rule 9) =====
+    combined = {
+        'epoch': 0, 'global_step': 0, 'epoch_loss': 0.0, 'lr': args.lr_g,
+        'args': args,
+        'gen_diffusive_1_dict': gen_diffusive_1.state_dict(),
+        'gen_diffusive_2_dict': gen_diffusive_2.state_dict(),
+        'gen_non_diffusive_1to2_dict': gen_non_diffusive_1to2.state_dict(),
+        'gen_non_diffusive_2to1_dict': gen_non_diffusive_2to1.state_dict(),
+        'disc_diffusive_1_dict': disc_diffusive_1.state_dict(),
+        'disc_diffusive_2_dict': disc_diffusive_2.state_dict(),
+        'disc_non_diffusive_cycle1_dict': disc_non_diffusive_cycle1.state_dict(),
+        'disc_non_diffusive_cycle2_dict': disc_non_diffusive_cycle2.state_dict(),
+        'optimizer_gen_diffusive_1': optimizer_gen_diffusive_1.state_dict(),
+        'optimizer_gen_diffusive_2': optimizer_gen_diffusive_2.state_dict(),
+        'optimizer_gen_non_diffusive_1to2': optimizer_gen_non_diffusive_1to2.state_dict(),
+        'optimizer_gen_non_diffusive_2to1': optimizer_gen_non_diffusive_2to1.state_dict(),
+        'optimizer_disc_diffusive_1': optimizer_disc_diffusive_1.state_dict(),
+        'optimizer_disc_diffusive_2': optimizer_disc_diffusive_2.state_dict(),
+        'optimizer_disc_non_diffusive_cycle1': optimizer_disc_non_diffusive_cycle1.state_dict(),
+        'optimizer_disc_non_diffusive_cycle2': optimizer_disc_non_diffusive_cycle2.state_dict(),
+        'scheduler_gen_diffusive_1': scheduler_gen_diffusive_1.state_dict(),
+        'scheduler_gen_diffusive_2': scheduler_gen_diffusive_2.state_dict(),
+        'scheduler_gen_non_diffusive_1to2': scheduler_gen_non_diffusive_1to2.state_dict(),
+        'scheduler_gen_non_diffusive_2to1': scheduler_gen_non_diffusive_2to1.state_dict(),
+        'scheduler_disc_diffusive_1': scheduler_disc_diffusive_1.state_dict(),
+        'scheduler_disc_diffusive_2': scheduler_disc_diffusive_2.state_dict(),
+        'scheduler_disc_non_diffusive_cycle1': scheduler_disc_non_diffusive_cycle1.state_dict(),
+        'scheduler_disc_non_diffusive_cycle2': scheduler_disc_non_diffusive_cycle2.state_dict(),
+    }
+    torch.save(combined, os.path.join(model_dir, '0.pt'))
+    logger.info("Saved 0.pt (initial weights)")
 
     # ===== Setup diffusion coefficients =====
     coeff = Diffusion_Coefficients(args, device)
@@ -324,8 +369,10 @@ def train_syndiff(args):
     # ===== Training loop =====
     global_step = 0
     total_steps_per_epoch = len(data_loader)
+    total_global_steps = args.num_epoch * total_steps_per_epoch
 
     for epoch in range(0, args.num_epoch + 1):
+        epoch_start_time = time.time()
         # Track epoch losses
         epoch_losses = {
             'G_cycle': 0.0, 'G_L1': 0.0, 'G_adv': 0.0,
@@ -547,14 +594,14 @@ def train_syndiff(args):
 
             global_step += 1
 
-            # Log iteration-level losses (print every 100 steps)
-            if iteration % 100 == 0:
-                print(f'Epoch [{epoch}/{args.num_epoch}], '
-                      f'Step [{iteration}/{total_steps_per_epoch}], '
-                      f'Global Step: {global_step}')
-                print(f'  G-Cycle: {errG_cycle.item():.4f}, G-L1: {errG_L1.item():.4f}, '
-                      f'G-Adv: {errG_adv.item():.4f}, G-cycle-Adv: {errG_cycle_adv.item():.4f}, '
-                      f'G-Sum: {errG.item():.4f}, D: {errD.item():.4f}, D-cycle: {errD_cycle.item():.4f}')
+            # Log iteration-level (Rule 8 per-step format)
+            if global_step % args.log_interval == 0:
+                current_lr = optimizer_gen_diffusive_1.param_groups[0]['lr']
+                logger.info(
+                    f'Epoch {epoch}/{args.num_epoch} | '
+                    f'Step {iteration}/{total_steps_per_epoch} '
+                    f'[global {global_step}/{total_global_steps}] | '
+                    f'Loss: {errG.item():.6f} | LR: {current_lr:.2e}')
 
                 writer.add_scalar('train/G_cycle_iter', errG_cycle.item(), global_step)
                 writer.add_scalar('train/G_L1_iter', errG_L1.item(), global_step)
@@ -564,6 +611,7 @@ def train_syndiff(args):
                 writer.add_scalar('train/D_cycle_iter', errD_cycle.item(), global_step)
 
         # ---- End of epoch ----
+        epoch_time = time.time() - epoch_start_time
 
         # Learning rate scheduling
         if not args.no_lr_decay:
@@ -590,82 +638,50 @@ def train_syndiff(args):
         writer.add_scalar('epoch/lr_g', optimizer_gen_diffusive_1.param_groups[0]['lr'], epoch)
         writer.add_scalar('epoch/lr_d', optimizer_disc_diffusive_1.param_groups[0]['lr'], epoch)
 
-        print(f'=== End of Epoch [{epoch}/{args.num_epoch}], '
-              f'Total Steps: {global_step} ===')
-        print(f'  G-Cycle: {epoch_losses["G_cycle"]:.4f}, G-L1: {epoch_losses["G_L1"]:.4f}, '
-              f'G-Adv: {epoch_losses["G_adv"]:.4f}, G-cycle-Adv: {epoch_losses["G_cycle_adv"]:.4f}')
-        print(f'  G-Total: {epoch_losses["G_total"]:.4f}, D: {epoch_losses["D_total"]:.4f}, '
-              f'D-cycle: {epoch_losses["D_cycle"]:.4f}')
-        print(f'  LR_G: {optimizer_gen_diffusive_1.param_groups[0]["lr"]:.2e}, '
-              f'LR_D: {optimizer_disc_diffusive_1.param_groups[0]["lr"]:.2e}')
+        # Rule 8 epoch-end summary
+        current_lr = optimizer_gen_diffusive_1.param_groups[0]['lr']
+        avg_loss = epoch_losses['G_total']
+        logger.info(
+            f'Epoch [{epoch}/{args.num_epoch}] | '
+            f'Loss: {avg_loss:.6f} | LR: {current_lr:.2e} | '
+            f'Time: {epoch_time:.1f}s')
 
-        # ---- Save sample images ----
-        if epoch % 10 == 0:
-            with torch.no_grad():
-                # Save diffusive samples
-                torchvision.utils.save_image(
-                    x1_pos_sample, os.path.join(task_dir, f'xpos1_epoch_{epoch}.png'), normalize=True)
-                torchvision.utils.save_image(
-                    x2_pos_sample, os.path.join(task_dir, f'xpos2_epoch_{epoch}.png'), normalize=True)
-
-                # Generate samples from noise
-                x1_t_sample = torch.cat((torch.randn_like(real_data1), real_data2), axis=1)
-                fake_sample1 = sample_from_model(
-                    pos_coeff, gen_diffusive_1, args.num_timesteps, x1_t_sample, T, args)
-                fake_sample1 = torch.cat((real_data2, fake_sample1), axis=-1)
-                torchvision.utils.save_image(
-                    fake_sample1, os.path.join(task_dir, f'sample1_epoch_{epoch}.png'), normalize=True)
-
-                x2_t_sample = torch.cat((torch.randn_like(real_data2), real_data1), axis=1)
-                fake_sample2 = sample_from_model(
-                    pos_coeff, gen_diffusive_2, args.num_timesteps, x2_t_sample, T, args)
-                fake_sample2 = torch.cat((real_data1, fake_sample2), axis=-1)
-                torchvision.utils.save_image(
-                    fake_sample2, os.path.join(task_dir, f'sample2_epoch_{epoch}.png'), normalize=True)
-
-        # ---- Save checkpoint ----
-        if epoch % args.save_ckpt_every == 0:
-            print(f'Saving checkpoint at epoch {epoch}...')
-            torch.save(gen_diffusive_1.state_dict(),
-                       os.path.join(model_dir, f'gen_diffusive_1_{epoch}.pth'))
-            torch.save(gen_diffusive_2.state_dict(),
-                       os.path.join(model_dir, f'gen_diffusive_2_{epoch}.pth'))
-            torch.save(gen_non_diffusive_1to2.state_dict(),
-                       os.path.join(model_dir, f'gen_non_diffusive_1to2_{epoch}.pth'))
-            torch.save(gen_non_diffusive_2to1.state_dict(),
-                       os.path.join(model_dir, f'gen_non_diffusive_2to1_{epoch}.pth'))
-
-        # Save latest model
-        if epoch % args.save_content_every == 0:
-            print(f'Saving full checkpoint at epoch {epoch}...')
-            content = {
-                'epoch': epoch + 1, 'global_step': global_step, 'args': args,
-                'gen_diffusive_1_dict': gen_diffusive_1.state_dict(),
-                'gen_diffusive_2_dict': gen_diffusive_2.state_dict(),
-                'gen_non_diffusive_1to2_dict': gen_non_diffusive_1to2.state_dict(),
-                'gen_non_diffusive_2to1_dict': gen_non_diffusive_2to1.state_dict(),
-                'disc_diffusive_1_dict': disc_diffusive_1.state_dict(),
-                'disc_diffusive_2_dict': disc_diffusive_2.state_dict(),
-                'disc_non_diffusive_cycle1_dict': disc_non_diffusive_cycle1.state_dict(),
-                'disc_non_diffusive_cycle2_dict': disc_non_diffusive_cycle2.state_dict(),
-                'optimizer_gen_diffusive_1': optimizer_gen_diffusive_1.state_dict(),
-                'optimizer_gen_diffusive_2': optimizer_gen_diffusive_2.state_dict(),
-                'optimizer_gen_non_diffusive_1to2': optimizer_gen_non_diffusive_1to2.state_dict(),
-                'optimizer_gen_non_diffusive_2to1': optimizer_gen_non_diffusive_2to1.state_dict(),
-                'optimizer_disc_diffusive_1': optimizer_disc_diffusive_1.state_dict(),
-                'optimizer_disc_diffusive_2': optimizer_disc_diffusive_2.state_dict(),
-                'optimizer_disc_non_diffusive_cycle1': optimizer_disc_non_diffusive_cycle1.state_dict(),
-                'optimizer_disc_non_diffusive_cycle2': optimizer_disc_non_diffusive_cycle2.state_dict(),
-                'scheduler_gen_diffusive_1': scheduler_gen_diffusive_1.state_dict(),
-                'scheduler_gen_diffusive_2': scheduler_gen_diffusive_2.state_dict(),
-                'scheduler_gen_non_diffusive_1to2': scheduler_gen_non_diffusive_1to2.state_dict(),
-                'scheduler_gen_non_diffusive_2to1': scheduler_gen_non_diffusive_2to1.state_dict(),
-                'scheduler_disc_diffusive_1': scheduler_disc_diffusive_1.state_dict(),
-                'scheduler_disc_diffusive_2': scheduler_disc_diffusive_2.state_dict(),
-                'scheduler_disc_non_diffusive_cycle1': scheduler_disc_non_diffusive_cycle1.state_dict(),
-                'scheduler_disc_non_diffusive_cycle2': scheduler_disc_non_diffusive_cycle2.state_dict(),
-            }
-            torch.save(content, os.path.join(model_dir, 'content.pth'))
+        # ---- Save checkpoints (Rule 9) ----
+        combined = {
+            'epoch': epoch + 1, 'global_step': global_step,
+            'epoch_loss': avg_loss, 'lr': current_lr, 'args': args,
+            'gen_diffusive_1_dict': gen_diffusive_1.state_dict(),
+            'gen_diffusive_2_dict': gen_diffusive_2.state_dict(),
+            'gen_non_diffusive_1to2_dict': gen_non_diffusive_1to2.state_dict(),
+            'gen_non_diffusive_2to1_dict': gen_non_diffusive_2to1.state_dict(),
+            'disc_diffusive_1_dict': disc_diffusive_1.state_dict(),
+            'disc_diffusive_2_dict': disc_diffusive_2.state_dict(),
+            'disc_non_diffusive_cycle1_dict': disc_non_diffusive_cycle1.state_dict(),
+            'disc_non_diffusive_cycle2_dict': disc_non_diffusive_cycle2.state_dict(),
+            'optimizer_gen_diffusive_1': optimizer_gen_diffusive_1.state_dict(),
+            'optimizer_gen_diffusive_2': optimizer_gen_diffusive_2.state_dict(),
+            'optimizer_gen_non_diffusive_1to2': optimizer_gen_non_diffusive_1to2.state_dict(),
+            'optimizer_gen_non_diffusive_2to1': optimizer_gen_non_diffusive_2to1.state_dict(),
+            'optimizer_disc_diffusive_1': optimizer_disc_diffusive_1.state_dict(),
+            'optimizer_disc_diffusive_2': optimizer_disc_diffusive_2.state_dict(),
+            'optimizer_disc_non_diffusive_cycle1': optimizer_disc_non_diffusive_cycle1.state_dict(),
+            'optimizer_disc_non_diffusive_cycle2': optimizer_disc_non_diffusive_cycle2.state_dict(),
+            'scheduler_gen_diffusive_1': scheduler_gen_diffusive_1.state_dict(),
+            'scheduler_gen_diffusive_2': scheduler_gen_diffusive_2.state_dict(),
+            'scheduler_gen_non_diffusive_1to2': scheduler_gen_non_diffusive_1to2.state_dict(),
+            'scheduler_gen_non_diffusive_2to1': scheduler_gen_non_diffusive_2to1.state_dict(),
+            'scheduler_disc_diffusive_1': scheduler_disc_diffusive_1.state_dict(),
+            'scheduler_disc_diffusive_2': scheduler_disc_diffusive_2.state_dict(),
+            'scheduler_disc_non_diffusive_cycle1': scheduler_disc_non_diffusive_cycle1.state_dict(),
+            'scheduler_disc_non_diffusive_cycle2': scheduler_disc_non_diffusive_cycle2.state_dict(),
+        }
+        # latest.pt: every epoch (overwrite)
+        torch.save(combined, os.path.join(model_dir, 'latest.pt'))
+        # checkpoint_epoch_{N}.pt: every 20 epochs (milestone)
+        if epoch > 0 and epoch % 20 == 0:
+            torch.save(combined,
+                       os.path.join(model_dir, f'checkpoint_epoch_{epoch}.pt'))
+            logger.info(f"Saved milestone checkpoint at epoch {epoch}")
 
         # ---- Validation ----
         if epoch % 10 == 0:
@@ -710,11 +726,15 @@ def train_syndiff(args):
             if val_count_2 > 0:
                 writer.add_scalar('val/L1_direction2', val_l1_2 / val_count_2, epoch)
 
-            print(f'  Val L1: dir1={val_l1_1/max(val_count_1,1):.4f}, '
-                  f'dir2={val_l1_2/max(val_count_2,1):.4f}')
+            logger.info(f'Val L1: dir1={val_l1_1/max(val_count_1,1):.4f}, '
+                        f'dir2={val_l1_2/max(val_count_2,1):.4f}')
+
+    # ---- Save final_model.pt (Rule 9) ----
+    torch.save(combined, os.path.join(model_dir, 'final_model.pt'))
+    logger.info("Saved final_model.pt")
 
     writer.close()
-    print(f"Training completed. Models saved to: {model_dir}")
+    logger.info(f"Training completed. Models saved to: {model_dir}")
     return task_dir
 
 
@@ -782,11 +802,17 @@ if __name__ == '__main__':
 
     # Generator and training
     parser.add_argument('--exp', default='BraTS20_syndiff', help='name of experiment')
-    parser.add_argument('--input_path', help='path to BraTS2020 patient directories')
-    parser.add_argument('--datalist_dir', default=None,
-                        help='path to datalist directory (train.list/val.list). '
-                             'Defaults to $COMPARE_ROOT/datalist/BraTS2020')
-    parser.add_argument('--output_path', default='./results', help='path to output saves')
+    parser.add_argument('--input_path', default=os.environ.get('DATA_ROOT'),
+                        help='path to BraTS2020 patient directories (env: $DATA_ROOT)')
+    parser.add_argument('--datalist_dir',
+                        default=os.environ.get('DATALIST_DIR'),
+                        help='path to datalist directory (env: $DATALIST_DIR)')
+    parser.add_argument('--output_path',
+                        default=os.environ.get('COMPARE_ROOT',
+                        os.path.join(os.path.dirname(os.path.abspath(__file__)))).rstrip('/') + '/results',
+                        help='path to output saves (env: $COMPARE_ROOT)')
+    parser.add_argument('--log_interval', type=int, default=10,
+                        help='log every N steps')
     parser.add_argument('--nz', type=int, default=100)
     parser.add_argument('--num_timesteps', type=int, default=4)
 
